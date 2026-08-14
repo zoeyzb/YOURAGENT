@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { AgentConfig } from "@/lib/domain";
 
 export type RuntimeDeployment = {
@@ -13,13 +14,108 @@ export interface VoiceRuntimeAdapter {
   pause(deploymentId: string): Promise<void>;
 }
 
+const DograhWorkflowResponse = z.object({
+  id: z.number().int().positive(),
+  status: z.string(),
+  workflow_uuid: z.string().nullable().optional(),
+});
+
+function promptForNode(node: AgentConfig["workflow"]["nodes"][number], config: AgentConfig) {
+  const explicit = node.config.prompt;
+  if (typeof explicit === "string" && explicit.trim()) return explicit.trim();
+
+  if (node.type === "ask") {
+    const objective = node.config.objective;
+    return typeof objective === "string" && objective.trim()
+      ? `Ask focused questions that help accomplish this objective: ${objective.trim()}`
+      : `Ask the caller about ${node.label}.`;
+  }
+
+  if (node.type === "end") return "Briefly confirm the next step, thank the caller, and end the call politely.";
+  if (node.type === "decision") return `Evaluate ${node.label} from the conversation and move to the correct next step.`;
+  if (node.type === "say") {
+    return `You are ${config.name}. ${node.label}. Be concise, natural, and follow the agent's objective: ${config.goal.objective}`;
+  }
+
+  return node.label;
+}
+
+export function toDograhWorkflowDefinition(config: AgentConfig) {
+  const incoming = new Map<string, number>();
+  for (const node of config.workflow.nodes) incoming.set(node.id, 0);
+  for (const edge of config.workflow.edges) incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+
+  const entryNodes = config.workflow.nodes.filter((node) => (incoming.get(node.id) ?? 0) === 0);
+  if (entryNodes.length !== 1) throw new Error("Workflow requires exactly one entry node");
+  const entryId = entryNodes[0].id;
+
+  const unsupported = config.workflow.nodes.filter((node) => node.type === "tool" || node.type === "transfer");
+  if (unsupported.length) {
+    throw new Error(`Dograh tool mapping is not configured for nodes: ${unsupported.map((node) => node.id).join(", ")}`);
+  }
+
+  const nodes = config.workflow.nodes.map((node, index) => {
+    const type = node.id === entryId
+      ? "startCall"
+      : node.type === "end"
+        ? "endCall"
+        : "agentNode";
+
+    return {
+      id: node.id,
+      type,
+      position: { x: index * 320, y: 0 },
+      data: {
+        name: node.label,
+        prompt: promptForNode(node, config),
+        allow_interrupt: true,
+        wait_for_user_response: type === "agentNode",
+      },
+    };
+  });
+
+  const edges = config.workflow.edges.map((edge, index) => ({
+    id: `edge-${index + 1}-${edge.from}-${edge.to}`,
+    source: edge.from,
+    target: edge.to,
+    data: {
+      label: edge.condition ?? "continue",
+      condition: edge.condition ?? "The current step is complete and the conversation should continue.",
+    },
+  }));
+
+  return { nodes, edges };
+}
+
 export class DograhAdapter implements VoiceRuntimeAdapter {
-  constructor(private readonly baseUrl: string, private readonly apiKey: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey: string,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
+
+  private apiUrl(path: string) {
+    return `${this.baseUrl.replace(/\/$/, "")}/api/v1${path}`;
+  }
+
+  private headers() {
+    return {
+      "Content-Type": "application/json",
+      "X-API-Key": this.apiKey,
+    };
+  }
 
   async validate(config: AgentConfig) {
     const errors: string[] = [];
     if (!config.workflow.nodes.some((node) => node.type === "end")) errors.push("Workflow requires an end node");
     if (config.goal.direction !== "inbound" && !config.complianceProfile) errors.push("Outbound agents require a compliance profile");
+
+    try {
+      toDograhWorkflowDefinition(config);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : "Invalid Dograh workflow mapping");
+    }
+
     return { valid: errors.length === 0, errors };
   }
 
@@ -28,10 +124,42 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     if (!validation.valid) throw new Error(validation.errors.join("; "));
     if (!this.baseUrl || !this.apiKey) throw new Error("Dograh runtime credentials are not configured");
 
-    // Deliberately isolated: map the canonical AgentConfig to Dograh's live API here.
-    // No UI or domain code may depend on Dograh-specific response shapes.
+    const response = await this.fetchImpl(this.apiUrl("/workflow/create/definition"), {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        name: `${config.name} v${config.version}`,
+        workflow_definition: toDograhWorkflowDefinition(config),
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Dograh create workflow failed (${response.status}): ${detail.slice(0, 500)}`);
+    }
+
+    const workflow = DograhWorkflowResponse.parse(await response.json());
+
+    const validationResponse = await this.fetchImpl(this.apiUrl(`/workflow/${workflow.id}/validate`), {
+      method: "POST",
+      headers: this.headers(),
+    });
+    if (!validationResponse.ok) {
+      const detail = await validationResponse.text();
+      throw new Error(`Dograh workflow validation failed (${validationResponse.status}): ${detail.slice(0, 500)}`);
+    }
+
+    const validationBody = z.object({
+      is_valid: z.boolean(),
+      errors: z.array(z.object({ message: z.string() })).default([]),
+    }).parse(await validationResponse.json());
+
+    if (!validationBody.is_valid) {
+      throw new Error(`Dograh rejected workflow: ${validationBody.errors.map((error) => error.message).join("; ")}`);
+    }
+
     return {
-      deploymentId: `dograh:${config.id}:v${config.version}`,
+      deploymentId: `dograh-workflow:${workflow.id}`,
       agentId: config.id,
       version: config.version,
       status: "ready",
@@ -39,6 +167,19 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
   }
 
   async pause(deploymentId: string) {
-    if (!deploymentId.startsWith("dograh:")) throw new Error("Unknown Dograh deployment id");
+    const match = /^dograh-workflow:(\d+)$/.exec(deploymentId);
+    if (!match) throw new Error("Unknown Dograh deployment id");
+    if (!this.baseUrl || !this.apiKey) throw new Error("Dograh runtime credentials are not configured");
+
+    const response = await this.fetchImpl(this.apiUrl(`/workflow/${match[1]}/status`), {
+      method: "PUT",
+      headers: this.headers(),
+      body: JSON.stringify({ status: "archived" }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Dograh archive workflow failed (${response.status}): ${detail.slice(0, 500)}`);
+    }
   }
 }
