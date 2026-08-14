@@ -145,7 +145,7 @@ export async function POST(request: Request) {
       throw versionError;
     }
 
-    return NextResponse.json({ agent: { id: agentId, ...config } }, { status: 201 });
+    return NextResponse.json({ agent: config }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "INVALID_AGENT", issues: error.issues }, { status: 400 });
