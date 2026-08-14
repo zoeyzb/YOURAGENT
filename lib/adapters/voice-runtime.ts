@@ -12,6 +12,7 @@ export interface VoiceRuntimeAdapter {
   validate(config: AgentConfig): Promise<{ valid: boolean; errors: string[] }>;
   deploy(config: AgentConfig): Promise<RuntimeDeployment>;
   pause(deploymentId: string): Promise<void>;
+  resume(deploymentId: string): Promise<void>;
 }
 
 const DograhWorkflowResponse = z.object({
@@ -105,6 +106,27 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     };
   }
 
+  private workflowId(deploymentId: string) {
+    const match = /^dograh-workflow:(\d+)$/.exec(deploymentId);
+    if (!match) throw new Error("Unknown Dograh deployment id");
+    return match[1];
+  }
+
+  private async setWorkflowStatus(deploymentId: string, status: "active" | "archived") {
+    if (!this.baseUrl || !this.apiKey) throw new Error("Dograh runtime credentials are not configured");
+    const workflowId = this.workflowId(deploymentId);
+    const response = await this.fetchImpl(this.apiUrl(`/workflow/${workflowId}/status`), {
+      method: "PUT",
+      headers: this.headers(),
+      body: JSON.stringify({ status }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Dograh ${status} workflow failed (${response.status}): ${detail.slice(0, 500)}`);
+    }
+  }
+
   async validate(config: AgentConfig) {
     const errors: string[] = [];
     if (!config.workflow.nodes.some((node) => node.type === "end")) errors.push("Workflow requires an end node");
@@ -167,19 +189,10 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
   }
 
   async pause(deploymentId: string) {
-    const match = /^dograh-workflow:(\d+)$/.exec(deploymentId);
-    if (!match) throw new Error("Unknown Dograh deployment id");
-    if (!this.baseUrl || !this.apiKey) throw new Error("Dograh runtime credentials are not configured");
+    await this.setWorkflowStatus(deploymentId, "archived");
+  }
 
-    const response = await this.fetchImpl(this.apiUrl(`/workflow/${match[1]}/status`), {
-      method: "PUT",
-      headers: this.headers(),
-      body: JSON.stringify({ status: "archived" }),
-    });
-
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`Dograh archive workflow failed (${response.status}): ${detail.slice(0, 500)}`);
-    }
+  async resume(deploymentId: string) {
+    await this.setWorkflowStatus(deploymentId, "active");
   }
 }
