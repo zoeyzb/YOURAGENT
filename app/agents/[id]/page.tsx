@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { hasDograhEnv } from "@/lib/env";
 import { DeployButton } from "./DeployButton";
+import { RuntimeStatusButton } from "./RuntimeStatusButton";
 
 type WorkflowNodeView = { id: string; label: string; type: string };
 type SkillView = { id: string; name: string; category: string; version: number };
@@ -88,6 +89,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
           <h2>{String(deployment.status).toUpperCase()} on {deployment.provider}</h2>
           <p>Real runtime ID: <code>{deployment.external_deployment_id}</code></p>
           <p>Created {new Date(deployment.created_at).toLocaleString()}</p>
+          <RuntimeStatusButton agentId={id} action={deployment.status === "paused" ? "resume" : "pause"} />
           {deployment.last_error ? <p style={{color:'#fca5a5'}}>{deployment.last_error}</p> : null}
         </> : <>
           <h2>Not deployed yet.</h2>
