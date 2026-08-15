@@ -3,6 +3,7 @@ import type { AgentConfig } from "@/lib/domain";
 
 export type RuntimeDeployment = {
   deploymentId: string;
+  workflowUuid: string | null;
   agentId: string;
   version: number;
   status: "ready" | "failed";
@@ -194,6 +195,7 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
 
     return {
       deploymentId: `dograh-workflow:${workflow.id}`,
+      workflowUuid: workflow.workflow_uuid ?? null,
       agentId: config.id,
       version: config.version,
       status: "ready",
