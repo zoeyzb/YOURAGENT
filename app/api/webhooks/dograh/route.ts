@@ -11,6 +11,11 @@ const WebhookSignal = z.object({
   youragent_call_id: z.string().optional().nullable(),
 }).passthrough();
 
+type ExistingCallRow = {
+  id: string;
+  metadata: Record<string, unknown> | null;
+};
+
 export async function POST(request: Request) {
   try {
     const token = new URL(request.url).searchParams.get("token");
@@ -45,7 +50,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "RUN_WORKFLOW_MISMATCH" }, { status: 403 });
     }
 
-    let existingCall: { id: string; metadata: Record<string, unknown> | null } | null = null;
+    let existingCall: ExistingCallRow | null = null;
     if (signal.youragent_call_id && z.string().uuid().safeParse(signal.youragent_call_id).success) {
       const { data, error } = await admin
         .from("calls")
@@ -55,7 +60,7 @@ export async function POST(request: Request) {
         .eq("agent_id", deployment.agent_id)
         .maybeSingle();
       if (error) throw error;
-      existingCall = data as typeof existingCall;
+      existingCall = data ? (data as unknown as ExistingCallRow) : null;
     }
 
     if (!existingCall) {
@@ -66,7 +71,7 @@ export async function POST(request: Request) {
         .eq("external_run_id", String(run.id))
         .maybeSingle();
       if (error) throw error;
-      existingCall = data as typeof existingCall;
+      existingCall = data ? (data as unknown as ExistingCallRow) : null;
     }
 
     const previousMetadata = existingCall?.metadata && typeof existingCall.metadata === "object"
