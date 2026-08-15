@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { TwilioConnectionForm } from "./TwilioConnectionForm";
 import { PhoneRouteForm } from "./PhoneRouteForm";
+import { OutboundCallForm } from "./OutboundCallForm";
 
 export const dynamic = "force-dynamic";
 
@@ -19,12 +20,13 @@ export default async function TelephonySettingsPage() {
     .in("role", ["owner", "admin"]);
   const organizationIds = (memberships ?? []).map((item) => item.organization_id);
 
-  const [{ data: organizations }, { data: telephonyConnections }, { data: agents }, { data: deployments }, { data: routes }] = await Promise.all([
+  const [{ data: organizations }, { data: telephonyConnections }, { data: agents }, { data: deployments }, { data: routes }, { data: versions }] = await Promise.all([
     organizationIds.length ? supabase.from("organizations").select("id,name").in("id", organizationIds) : Promise.resolve({ data: [] as { id: string; name: string }[] }),
     organizationIds.length ? supabase.from("telephony_connections").select("id,organization_id,provider,external_config_id,name,status,is_default_outbound,created_at").in("organization_id", organizationIds) : Promise.resolve({ data: [] as never[] }),
-    organizationIds.length ? supabase.from("agents").select("id,organization_id,name,status").in("organization_id", organizationIds) : Promise.resolve({ data: [] as never[] }),
-    organizationIds.length ? supabase.from("runtime_deployments").select("agent_id,organization_id,status,provider,created_at").in("organization_id", organizationIds).eq("provider", "dograh").eq("status", "ready") : Promise.resolve({ data: [] as never[] }),
+    organizationIds.length ? supabase.from("agents").select("id,organization_id,name,status,current_version").in("organization_id", organizationIds) : Promise.resolve({ data: [] as never[] }),
+    organizationIds.length ? supabase.from("runtime_deployments").select("agent_id,organization_id,status,provider,external_workflow_uuid,created_at").in("organization_id", organizationIds).eq("provider", "dograh").eq("status", "ready") : Promise.resolve({ data: [] as never[] }),
     organizationIds.length ? supabase.from("phone_number_routes").select("id,organization_id,telephony_connection_id,address,label,agent_id,is_active,is_default_caller_id,provider_sync_ok,provider_sync_message,created_at").in("organization_id", organizationIds).order("created_at", { ascending: false }) : Promise.resolve({ data: [] as never[] }),
+    organizationIds.length ? supabase.from("agent_versions").select("agent_id,version,config").in("organization_id", organizationIds) : Promise.resolve({ data: [] as never[] }),
   ]);
 
   return <main><div className="shell section">
@@ -39,9 +41,16 @@ export default async function TelephonySettingsPage() {
 
     {(organizations ?? []).map((organization) => {
       const orgConnections = (telephonyConnections ?? []).filter((item) => item.organization_id === organization.id);
-      const readyAgentIds = new Set((deployments ?? []).filter((item) => item.organization_id === organization.id).map((item) => item.agent_id));
+      const readyDeployments = (deployments ?? []).filter((item) => item.organization_id === organization.id && item.external_workflow_uuid);
+      const readyAgentIds = new Set(readyDeployments.map((item) => item.agent_id));
       const orgAgents = (agents ?? []).filter((item) => item.organization_id === organization.id && readyAgentIds.has(item.id));
       const orgRoutes = (routes ?? []).filter((item) => item.organization_id === organization.id);
+      const outboundAgents = orgAgents.filter((agent) => {
+        const current = (versions ?? []).find((version) => version.agent_id === agent.id && version.version === agent.current_version);
+        const config = current?.config as { goal?: { direction?: string } } | undefined;
+        return config?.goal?.direction === "outbound" || config?.goal?.direction === "both";
+      });
+      const activeCallerIds = orgRoutes.filter((route) => route.is_active && route.provider_sync_ok !== false);
 
       return <section key={organization.id} style={{ marginTop: 32 }}>
         <span className="eyebrow">{organization.name}</span>
@@ -59,6 +68,17 @@ export default async function TelephonySettingsPage() {
             <p>Dograh config ID: <code>{connection.external_config_id}</code></p>
             <PhoneRouteForm organizationId={organization.id} telephonyConnectionId={connection.id} agents={orgAgents.map((agent) => ({ id: agent.id, name: agent.name }))} />
           </section>)}
+
+          <section className="card builder-card">
+            <span className="eyebrow">OUTBOUND</span>
+            <h2>Place a policy-gated call</h2>
+            <p>Every manual outbound call requires explicit consent evidence, DNC-clear confirmation, target timezone, and jurisdiction before YOURAGENT asks Dograh to dial.</p>
+            <OutboundCallForm
+              organizationId={organization.id}
+              agents={outboundAgents.map((agent) => ({ id: agent.id, name: agent.name }))}
+              callerIds={activeCallerIds.map((route) => ({ id: route.id, address: route.address, label: route.label }))}
+            />
+          </section>
 
           <section className="card builder-card">
             <span className="eyebrow">PHONE ROUTES</span>
