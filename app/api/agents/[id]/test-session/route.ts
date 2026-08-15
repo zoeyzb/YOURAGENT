@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { AgentConfigSchema } from "@/lib/domain";
 import { DograhAdapter } from "@/lib/adapters/voice-runtime";
+import { fetchDograhRun } from "@/lib/adapters/dograh-runs";
 import { requireDograhEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+const RegisterRunRequest = z.object({
+  sessionId: z.string().uuid(),
+  runId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]),
+});
 
 function allowedOrigin(request: Request) {
   const raw = request.headers.get("origin") || process.env.NEXT_PUBLIC_APP_URL || "";
@@ -102,6 +109,45 @@ export async function POST(
   }
 }
 
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  try {
+    const payload = RegisterRunRequest.parse(await request.json());
+    const supabase = await createSupabaseServerClient();
+    const { data: auth, error: authError } = await supabase.auth.getUser();
+    if (authError || !auth.user) return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
+
+    const { data: session, error: sessionError } = await supabase
+      .from("runtime_test_sessions")
+      .select("id")
+      .eq("id", payload.sessionId)
+      .eq("agent_id", id)
+      .eq("created_by", auth.user.id)
+      .maybeSingle();
+    if (sessionError) throw sessionError;
+    if (!session) return NextResponse.json({ error: "TEST_SESSION_NOT_FOUND" }, { status: 404 });
+
+    const { error: updateError } = await supabase
+      .from("runtime_test_sessions")
+      .update({
+        workflow_run_id: String(payload.runId),
+        status: "active",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", session.id);
+    if (updateError) throw updateError;
+
+    return NextResponse.json({ status: "active", runId: String(payload.runId) });
+  } catch (error) {
+    if (error instanceof z.ZodError) return NextResponse.json({ error: "INVALID_RUN_REGISTRATION", issues: error.issues }, { status: 400 });
+    const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+    return NextResponse.json({ error: message }, { status: message === "SUPABASE_NOT_CONFIGURED" ? 503 : 500 });
+  }
+}
+
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -118,7 +164,7 @@ export async function DELETE(
 
     const { data: session, error: sessionError } = await supabase
       .from("runtime_test_sessions")
-      .select("id,external_deployment_id,status,created_by")
+      .select("id,organization_id,agent_id,agent_version,external_deployment_id,status,created_by,workflow_run_id")
       .eq("id", sessionId)
       .eq("agent_id", id)
       .eq("created_by", auth.user.id)
@@ -126,19 +172,80 @@ export async function DELETE(
     if (sessionError) throw sessionError;
     if (!session) return NextResponse.json({ error: "TEST_SESSION_NOT_FOUND" }, { status: 404 });
 
+    const { baseUrl, apiKey } = requireDograhEnv();
+    const adapter = new DograhAdapter(baseUrl, apiKey);
+    let callIngested = false;
+    let warning: string | null = null;
+
+    if (session.workflow_run_id) {
+      try {
+        const run = await fetchDograhRun({
+          deploymentId: session.external_deployment_id,
+          runId: session.workflow_run_id,
+          baseUrl,
+          apiKey,
+        });
+
+        const callPayload = {
+          organization_id: session.organization_id,
+          agent_id: session.agent_id,
+          agent_version: session.agent_version,
+          provider_call_id: String(run.id),
+          runtime_provider: "dograh",
+          external_run_id: String(run.id),
+          direction: run.call_type,
+          status: run.is_completed ? "completed" : "in_progress",
+          started_at: run.created_at,
+          transcript_url: run.transcript_public_url ?? run.transcript_url,
+          recording_url: run.recording_public_url ?? run.recording_url,
+          cost_info: run.cost_info,
+          usage_info: run.usage_info ?? null,
+          gathered_context: run.gathered_context ?? null,
+          is_test: true,
+          metadata: {
+            mode: run.mode,
+            initial_context: run.initial_context ?? null,
+            annotations: run.annotations ?? null,
+          },
+        };
+
+        const { data: existingCall, error: existingCallError } = await supabase
+          .from("calls")
+          .select("id")
+          .eq("runtime_provider", "dograh")
+          .eq("external_run_id", String(run.id))
+          .maybeSingle();
+        if (existingCallError) throw existingCallError;
+
+        const write = existingCall
+          ? await supabase.from("calls").update(callPayload).eq("id", existingCall.id)
+          : await supabase.from("calls").insert(callPayload);
+        if (write.error) throw write.error;
+        callIngested = true;
+      } catch (error) {
+        warning = error instanceof Error ? error.message : "CALL_INGESTION_FAILED";
+      }
+    }
+
     if (session.status !== "completed" && session.status !== "expired") {
-      const { baseUrl, apiKey } = requireDograhEnv();
-      const adapter = new DograhAdapter(baseUrl, apiKey);
-      await adapter.pause(session.external_deployment_id);
+      try {
+        await adapter.pause(session.external_deployment_id);
+      } catch (error) {
+        warning = warning ?? (error instanceof Error ? error.message : "PREVIEW_ARCHIVE_FAILED");
+      }
     }
 
     const { error: updateError } = await supabase
       .from("runtime_test_sessions")
-      .update({ status: "completed", updated_at: new Date().toISOString() })
+      .update({
+        status: warning ? "failed" : "completed",
+        last_error: warning,
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", session.id);
     if (updateError) throw updateError;
 
-    return NextResponse.json({ status: "completed" });
+    return NextResponse.json({ status: warning ? "failed" : "completed", callIngested, warning });
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
     const status = message === "SUPABASE_NOT_CONFIGURED" || message === "DOGRAH_NOT_CONFIGURED" ? 503 : 500;
