@@ -30,6 +30,7 @@ export default async function DashboardPage() {
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <Link className="btn" href="/calls">Calls · {callCount ?? 0}</Link>
           <Link className="btn" href="/settings/runtime">Runtime</Link>
+          <Link className="btn" href="/settings/telephony">Telephony</Link>
           <span className="eyebrow">SIGNED IN</span>
         </div>
       </div>
