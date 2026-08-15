@@ -138,12 +138,13 @@ export async function POST(
       .limit(1)
       .maybeSingle();
     if (priorDeploymentError) throw priorDeploymentError;
-    previousDeployment = priorDeploymentData as DeploymentRow | null;
+    const priorDeployment = priorDeploymentData as DeploymentRow | null;
+    previousDeployment = priorDeployment;
 
-    if (previousDeployment?.agent_version === version.version) {
+    if (priorDeployment && priorDeployment.agent_version === version.version) {
       return NextResponse.json({
         error: "VERSION_ALREADY_DEPLOYED",
-        deploymentId: previousDeployment.id,
+        deploymentId: priorDeployment.id,
       }, { status: 409 });
     }
 
@@ -193,7 +194,7 @@ export async function POST(
           completion_webhook_configured: true,
           tool_bindings: provisioned.bindings,
           created_tool_uuids: createdToolUuids,
-          replaces_deployment_id: previousDeployment?.id ?? null,
+          replaces_deployment_id: priorDeployment?.id ?? null,
         },
       })
       .select("id,external_deployment_id,external_workflow_uuid,status,created_at")
@@ -201,8 +202,8 @@ export async function POST(
     if (persistenceError) throw persistenceError;
     persistedDeploymentId = persisted.id;
 
-    if (previousDeployment) {
-      const oldWorkflowId = workflowId(previousDeployment.external_deployment_id);
+    if (priorDeployment) {
+      const oldWorkflowId = workflowId(priorDeployment.external_deployment_id);
       const { data: routesData, error: routesError } = await supabase
         .from("phone_number_routes")
         .select("id,telephony_connection_id,external_phone_number_id,external_workflow_id,label,is_active")
@@ -252,7 +253,7 @@ export async function POST(
         switchedRoutes.push({ route, configurationId: connection.external_config_id, oldWorkflowId });
       }
 
-      await adapter.pause(previousDeployment.external_deployment_id);
+      await adapter.pause(priorDeployment.external_deployment_id);
       previousPaused = true;
       const { error: oldStatusError } = await supabase
         .from("runtime_deployments")
@@ -261,12 +262,12 @@ export async function POST(
           last_error: null,
           updated_at: new Date().toISOString(),
           metadata: {
-            ...(previousDeployment.metadata ?? {}),
+            ...(priorDeployment.metadata ?? {}),
             replaced_by_deployment_id: persisted.id,
             replaced_at: new Date().toISOString(),
           },
         })
-        .eq("id", previousDeployment.id);
+        .eq("id", priorDeployment.id);
       if (oldStatusError) throw oldStatusError;
     }
 
@@ -292,8 +293,8 @@ export async function POST(
     previousPaused = false;
     versionPublished = false;
 
-    if (previousDeployment && toolAdapter) {
-      const oldToolUuids = createdTools(previousDeployment.metadata);
+    if (priorDeployment && toolAdapter) {
+      const oldToolUuids = createdTools(priorDeployment.metadata);
       if (oldToolUuids.length) {
         const cleanupErrors: string[] = [];
         for (const toolUuid of oldToolUuids) {
@@ -310,14 +311,14 @@ export async function POST(
               last_error: `CLEANUP_REQUIRED: ${cleanupErrors.join("; ").slice(0, 1500)}`,
               updated_at: new Date().toISOString(),
             })
-            .eq("id", previousDeployment.id);
+            .eq("id", priorDeployment.id);
         }
       }
     }
 
     return NextResponse.json({
       deployment: persisted,
-      replacedDeploymentId: previousDeployment?.id ?? null,
+      replacedDeploymentId: priorDeployment?.id ?? null,
       phoneRoutesSwitched,
     }, { status: 201 });
   } catch (error) {
