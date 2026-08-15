@@ -5,6 +5,7 @@ import { resolveSkills } from "@/lib/skills";
 import type { AgentConfig } from "@/lib/domain";
 import { DograhAdapter, toDograhWorkflowDefinition } from "@/lib/adapters/voice-runtime";
 import { DograhTelephonyAdapter } from "@/lib/adapters/dograh-telephony";
+import { triggerDograhOutboundCall } from "@/lib/adapters/dograh-outbound";
 
 const agentConfig: AgentConfig = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -88,6 +89,7 @@ describe("Dograh runtime adapter", () => {
     const deployment = await adapter.deploy(agentConfig);
 
     expect(deployment.deploymentId).toBe("dograh-workflow:42");
+    expect(deployment.workflowUuid).toBe("wf-42");
     expect(mockFetch).toHaveBeenNthCalledWith(
       1,
       "https://dograh.example/api/v1/workflow/create/definition",
@@ -242,6 +244,37 @@ describe("Dograh telephony adapter", () => {
       2,
       "https://dograh.example/api/v1/organizations/telephony-configs/7",
       expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+});
+
+describe("Dograh outbound adapter", () => {
+  it("triggers a published workflow by stable workflow UUID", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      status: "initiated",
+      workflow_run_id: 123,
+      workflow_run_name: "WR-API-1234",
+    }), { status: 200 }));
+
+    const call = await triggerDograhOutboundCall({
+      baseUrl: "https://dograh.example",
+      apiKey: "dg_test",
+      workflowUuid: "workflow-uuid-42",
+      phoneNumber: "+13125551234",
+      telephonyConfigurationId: 7,
+      fromPhoneNumberId: 91,
+      initialContext: { source: "youragent" },
+      fetchImpl: mockFetch,
+    });
+
+    expect(call.workflow_run_id).toBe(123);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://dograh.example/api/v1/public/agent/workflow/workflow-uuid-42",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-API-Key": "dg_test" }),
+        body: expect.stringContaining('"from_phone_number_id":91'),
+      }),
     );
   });
 });
