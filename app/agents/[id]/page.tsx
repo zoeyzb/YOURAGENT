@@ -28,12 +28,12 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
 
   const { data: agent } = await supabase
     .from("agents")
-    .select("id,name,status,current_version,created_at")
+    .select("id,organization_id,name,status,current_version,created_at")
     .eq("id", id)
     .maybeSingle();
   if (!agent) notFound();
 
-  const [{ data: version }, { data: deployment }] = await Promise.all([
+  const [{ data: version }, { data: deployment }, { data: runtimeConnection }] = await Promise.all([
     supabase
       .from("agent_versions")
       .select("version,status,config,config_hash,created_at")
@@ -47,12 +47,25 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase
+      .from("runtime_connections")
+      .select("provider,status,external_organization_id")
+      .eq("organization_id", agent.organization_id)
+      .eq("provider", "dograh")
+      .eq("status", "active")
+      .maybeSingle(),
   ]);
 
   const config = (version?.config ?? {}) as AgentConfigView;
   const nodes = config.workflow?.nodes ?? [];
   const skills = config.skills ?? [];
-  const dograhConfigured = hasDograhEnv();
+  const devFallbackEnabled = process.env.ALLOW_GLOBAL_DOGRAH_FALLBACK === "true" && hasDograhEnv();
+  const runtimeConfigured = Boolean(runtimeConnection) || devFallbackEnabled;
+  const runtimeLabel = runtimeConnection
+    ? `Tenant Dograh${runtimeConnection.external_organization_id ? ` · ${runtimeConnection.external_organization_id}` : ""}`
+    : devFallbackEnabled
+      ? "Development Dograh fallback"
+      : "No tenant runtime";
 
   return <main><div className="shell section">
     <div className="dash-top">
@@ -85,11 +98,10 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       </section>
 
       <section className="card builder-card">
-        <span className="eyebrow">TEST</span>
-        <h2>Voice preview</h2>
-        <p>Creates a temporary Dograh workflow with a short-lived domain-restricted token. It never exposes the Dograh API key to your browser and does not modify the production deployment.</p>
-        <TestAgentButton agentId={id} disabled={!dograhConfigured} />
-        {!dograhConfigured ? <p style={{marginTop:12}}>Dograh credentials are required before browser voice testing can start.</p> : null}
+        <span className="eyebrow">VOICE RUNTIME</span>
+        <h2>{runtimeLabel}</h2>
+        <TestAgentButton agentId={id} disabled={!runtimeConfigured} />
+        {!runtimeConfigured ? <p style={{marginTop:12}}>Connect this organization to its own Dograh runtime before testing or deploying.</p> : null}
       </section>
 
       <section className="card builder-card">
@@ -102,9 +114,9 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
           {deployment.last_error ? <p style={{color:'#fca5a5'}}>{deployment.last_error}</p> : null}
         </> : <>
           <h2>Not deployed yet.</h2>
-          <p>The configuration is persisted and versioned. Publishing calls Dograh's real workflow API, validates the returned workflow, then stores the external workflow ID.</p>
-          <DeployButton agentId={id} disabled={!dograhConfigured} />
-          {!dograhConfigured ? <p style={{marginTop:12}}>Dograh credentials are not configured yet, so deployment is safely disabled.</p> : null}
+          <p>The configuration is persisted and versioned. Publishing calls the organization-scoped Dograh runtime, validates the returned workflow, then stores the external workflow ID.</p>
+          <DeployButton agentId={id} disabled={!runtimeConfigured} />
+          {!runtimeConfigured ? <p style={{marginTop:12}}>Tenant Dograh credentials are not configured, so deployment is safely disabled.</p> : null}
         </>}
         <code className="hash">{version?.config_hash ?? "no version hash"}</code>
       </section>
