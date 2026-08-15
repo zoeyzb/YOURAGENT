@@ -110,6 +110,27 @@ export class DograhTelephonyAdapter {
     return PhoneNumberResponse.parse(await response.json());
   }
 
+  async updatePhoneNumber(input: {
+    configurationId: number | string;
+    phoneNumberId: number | string;
+    inboundWorkflowId: number;
+    label?: string | null;
+    isActive?: boolean;
+  }): Promise<DograhPhoneNumber> {
+    const response = await this.request(
+      `/telephony-configs/${input.configurationId}/phone-numbers/${input.phoneNumberId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          inbound_workflow_id: input.inboundWorkflowId,
+          label: input.label ?? null,
+          is_active: input.isActive ?? true,
+        }),
+      },
+    );
+    return PhoneNumberResponse.parse(await response.json());
+  }
+
   async deletePhoneNumber(configurationId: number | string, phoneNumberId: number | string) {
     await this.request(`/telephony-configs/${configurationId}/phone-numbers/${phoneNumberId}`, { method: "DELETE" });
   }
