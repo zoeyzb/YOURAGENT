@@ -4,6 +4,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { hasDograhEnv } from "@/lib/env";
 import { DeployButton } from "./DeployButton";
 import { RuntimeStatusButton } from "./RuntimeStatusButton";
+import { TestAgentButton } from "./TestAgentButton";
 
 type WorkflowNodeView = { id: string; label: string; type: string };
 type SkillView = { id: string; name: string; category: string; version: number };
@@ -81,6 +82,14 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         <span className="eyebrow">SKILLS</span>
         <h2>{skills.length} attached</h2>
         {skills.map((skill) => <div className="agent-row" key={skill.id}><div><strong>{skill.name}</strong><div style={{color:'#9ca3af',marginTop:4}}>{skill.category} · v{skill.version}</div></div></div>)}
+      </section>
+
+      <section className="card builder-card">
+        <span className="eyebrow">TEST</span>
+        <h2>Voice preview</h2>
+        <p>Creates a temporary Dograh workflow with a short-lived domain-restricted token. It never exposes the Dograh API key to your browser and does not modify the production deployment.</p>
+        <TestAgentButton agentId={id} disabled={!dograhConfigured} />
+        {!dograhConfigured ? <p style={{marginTop:12}}>Dograh credentials are required before browser voice testing can start.</p> : null}
       </section>
 
       <section className="card builder-card">
