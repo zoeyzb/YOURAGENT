@@ -97,7 +97,10 @@ export async function POST(
   let createdToolUuids: string[] = [];
   let switchedRoutes: SwitchedRoute[] = [];
   let previousDeployment: DeploymentRow | null = null;
+  let previousPaused = false;
+  let versionPublished = false;
   let supabase: Awaited<ReturnType<typeof createSupabaseServerClient>> | null = null;
+  let deployingVersion: number | null = null;
 
   try {
     supabase = await createSupabaseServerClient();
@@ -122,6 +125,7 @@ export async function POST(
       .maybeSingle();
     if (versionError) throw versionError;
     if (!version) return NextResponse.json({ error: "AGENT_VERSION_NOT_FOUND" }, { status: 409 });
+    deployingVersion = version.version;
 
     const { data: priorDeploymentData, error: priorDeploymentError } = await supabase
       .from("runtime_deployments")
@@ -249,6 +253,7 @@ export async function POST(
       }
 
       await adapter.pause(previousDeployment.external_deployment_id);
+      previousPaused = true;
       const { error: oldStatusError } = await supabase
         .from("runtime_deployments")
         .update({
@@ -271,16 +276,21 @@ export async function POST(
       .eq("agent_id", id)
       .eq("version", version.version);
     if (versionPublishError) throw versionPublishError;
+    versionPublished = true;
 
     const { error: agentPublishError } = await supabase
       .from("agents")
       .update({ status: "published" })
-      .eq("id", id);
+      .eq("id", id)
+      .eq("current_version", version.version);
     if (agentPublishError) throw agentPublishError;
 
+    const phoneRoutesSwitched = switchedRoutes.length;
     remoteDeploymentId = null;
     createdToolUuids = [];
     switchedRoutes = [];
+    previousPaused = false;
+    versionPublished = false;
 
     if (previousDeployment && toolAdapter) {
       const oldToolUuids = createdTools(previousDeployment.metadata);
@@ -308,13 +318,31 @@ export async function POST(
     return NextResponse.json({
       deployment: persisted,
       replacedDeploymentId: previousDeployment?.id ?? null,
-      phoneRoutesSwitched: switchedRoutes.length,
+      phoneRoutesSwitched,
     }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
 
     if (switchedRoutes.length && telephonyAdapter && supabase) {
       await rollbackPhoneRoutes(telephonyAdapter, supabase, switchedRoutes);
+    }
+    if (previousPaused && previousDeployment && adapter && supabase) {
+      try {
+        await adapter.resume(previousDeployment.external_deployment_id);
+        await supabase
+          .from("runtime_deployments")
+          .update({ status: "ready", last_error: null, updated_at: new Date().toISOString() })
+          .eq("id", previousDeployment.id);
+      } catch {
+        await supabase
+          .from("runtime_deployments")
+          .update({
+            status: "failed",
+            last_error: "ROLLBACK_FAILED: previous workflow could not be resumed automatically",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", previousDeployment.id);
+      }
     }
     if (remoteDeploymentId && adapter) {
       try {
@@ -325,6 +353,13 @@ export async function POST(
     }
     if (createdToolUuids.length && toolAdapter) {
       await rollbackProvisionedDograhTools(toolAdapter, createdToolUuids);
+    }
+    if (versionPublished && deployingVersion && supabase) {
+      await supabase
+        .from("agent_versions")
+        .update({ status: "draft" })
+        .eq("agent_id", id)
+        .eq("version", deployingVersion);
     }
     if (persistedDeploymentId && supabase) {
       await supabase
