@@ -5,6 +5,7 @@ import { resolveSkills } from "@/lib/skills";
 import type { AgentConfig } from "@/lib/domain";
 import { DograhAdapter, toDograhWorkflowDefinition } from "@/lib/adapters/voice-runtime";
 import { DograhTelephonyAdapter } from "@/lib/adapters/dograh-telephony";
+import { DograhToolAdapter } from "@/lib/adapters/dograh-tools";
 import { triggerDograhOutboundCall } from "@/lib/adapters/dograh-outbound";
 
 const agentConfig: AgentConfig = {
@@ -136,7 +137,7 @@ describe("Dograh runtime adapter", () => {
       .rejects.toThrow(/explicit domain allowlist/i);
   });
 
-  it("rejects tool nodes until real Dograh tool UUID mapping exists", async () => {
+  it("requires an actionable configuration before provisioning a tool node", async () => {
     const config: AgentConfig = {
       ...agentConfig,
       workflow: {
@@ -155,7 +156,121 @@ describe("Dograh runtime adapter", () => {
     const adapter = new DograhAdapter("https://dograh.example", "dg_test");
     const validation = await adapter.validate(config);
     expect(validation.valid).toBe(false);
-    expect(validation.errors.join(" ")).toMatch(/tool mapping is not configured/i);
+    expect(validation.errors.join(" ")).toMatch(/requires an HTTP url or dograhToolUuid/i);
+  });
+
+  it("compiles provisioned Dograh tool UUIDs onto action nodes", () => {
+    const config: AgentConfig = {
+      ...agentConfig,
+      transferNumber: "+13125550000",
+      workflow: {
+        nodes: [
+          agentConfig.workflow.nodes[0],
+          { id: "book", type: "tool", label: "Book appointment", config: { url: "https://example.com/book" } },
+          { id: "transfer", type: "transfer", label: "Transfer to human", config: { destination: "+13125550000" } },
+          agentConfig.workflow.nodes[2],
+        ],
+        edges: [
+          { from: "start", to: "book" },
+          { from: "book", to: "transfer" },
+          { from: "transfer", to: "finish" },
+        ],
+      },
+    };
+
+    const definition = toDograhWorkflowDefinition(config, {
+      toolBindings: {
+        book: ["tool-book-uuid"],
+        transfer: ["tool-transfer-uuid"],
+      },
+    });
+    const book = definition.nodes.find((node) => node.id === "book");
+    const transfer = definition.nodes.find((node) => node.id === "transfer");
+    expect((book?.data as Record<string, unknown>).tool_uuids).toEqual(["tool-book-uuid"]);
+    expect((transfer?.data as Record<string, unknown>).tool_uuids).toEqual(["tool-transfer-uuid"]);
+  });
+});
+
+describe("Dograh tool adapter", () => {
+  it("creates a reusable transfer-call tool", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 1,
+      tool_uuid: "transfer-uuid",
+      name: "Transfer to human",
+      description: "Transfer the live call",
+      category: "transfer_call",
+      status: "active",
+      definition: {},
+      created_at: "2026-08-15T00:00:00Z",
+    }), { status: 200 }));
+    const adapter = new DograhToolAdapter("https://dograh.example", "dg_test", mockFetch);
+
+    const tool = await adapter.createTransferTool({
+      name: "Transfer to human",
+      destination: "+13125550000",
+      message: "I’ll connect you now.",
+    });
+
+    expect(tool.tool_uuid).toBe("transfer-uuid");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://dograh.example/api/v1/tools/",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"type":"transfer_call"'),
+      }),
+    );
+  });
+
+  it("creates an HTTP API tool with a Dograh credential reference", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 2,
+      tool_uuid: "http-uuid",
+      name: "Book appointment",
+      description: "Book an appointment",
+      category: "http_api",
+      status: "active",
+      definition: {},
+      created_at: "2026-08-15T00:00:00Z",
+    }), { status: 200 }));
+    const adapter = new DograhToolAdapter("https://dograh.example", "dg_test", mockFetch);
+
+    const tool = await adapter.createHttpApiTool({
+      name: "Book appointment",
+      description: "Book an appointment",
+      method: "POST",
+      url: "https://calendar.example/book",
+      credentialUuid: "credential-uuid",
+      parameters: [{ name: "email", type: "string", description: "Customer email", required: true }],
+      bodyTemplate: { email: "{{email}}" },
+    });
+
+    expect(tool.tool_uuid).toBe("http-uuid");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://dograh.example/api/v1/tools/",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"credential_uuid":"credential-uuid"'),
+      }),
+    );
+  });
+
+  it("rejects inline secret headers and archives created tools through Dograh", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ status: "archived" }), { status: 200 }));
+    const adapter = new DograhToolAdapter("https://dograh.example", "dg_test", mockFetch);
+
+    await expect(adapter.createHttpApiTool({
+      name: "Unsafe",
+      description: "Unsafe",
+      method: "POST",
+      url: "https://example.com",
+      headers: { Authorization: "Bearer secret" },
+    })).rejects.toThrow(/credential UUID/i);
+
+    await adapter.archiveTool("tool-uuid");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://dograh.example/api/v1/tools/tool-uuid",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 });
 
