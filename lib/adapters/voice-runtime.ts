@@ -15,9 +15,14 @@ export type EmbedToken = {
   expiresAt: string | null;
 };
 
+export type WorkflowCompileOptions = {
+  completionWebhookUrl?: string;
+  toolBindings?: Record<string, string[]>;
+};
+
 export interface VoiceRuntimeAdapter {
   validate(config: AgentConfig): Promise<{ valid: boolean; errors: string[] }>;
-  deploy(config: AgentConfig, options?: { completionWebhookUrl?: string }): Promise<RuntimeDeployment>;
+  deploy(config: AgentConfig, options?: WorkflowCompileOptions): Promise<RuntimeDeployment>;
   pause(deploymentId: string): Promise<void>;
   resume(deploymentId: string): Promise<void>;
 }
@@ -45,6 +50,8 @@ function promptForNode(node: AgentConfig["workflow"]["nodes"][number], config: A
       : `Ask the caller about ${node.label}.`;
   }
 
+  if (node.type === "tool") return `Use the configured ${node.label} tool when the required information is available. Confirm only details that matter, then continue naturally.`;
+  if (node.type === "transfer") return `When the caller is ready for ${node.label}, briefly explain the handoff and use the configured transfer tool.`;
   if (node.type === "end") return "Briefly confirm the next step, thank the caller, and end the call politely.";
   if (node.type === "decision") return `Evaluate ${node.label} from the conversation and move to the correct next step.`;
   if (node.type === "say") {
@@ -56,7 +63,7 @@ function promptForNode(node: AgentConfig["workflow"]["nodes"][number], config: A
 
 export function toDograhWorkflowDefinition(
   config: AgentConfig,
-  options: { completionWebhookUrl?: string } = {},
+  options: WorkflowCompileOptions = {},
 ) {
   const incoming = new Map<string, number>();
   for (const node of config.workflow.nodes) incoming.set(node.id, 0);
@@ -66,17 +73,18 @@ export function toDograhWorkflowDefinition(
   if (entryNodes.length !== 1) throw new Error("Workflow requires exactly one entry node");
   const entryId = entryNodes[0].id;
 
-  const unsupported = config.workflow.nodes.filter((node) => node.type === "tool" || node.type === "transfer");
-  if (unsupported.length) {
-    throw new Error(`Dograh tool mapping is not configured for nodes: ${unsupported.map((node) => node.id).join(", ")}`);
-  }
-
   const nodes: Array<Record<string, unknown>> = config.workflow.nodes.map((node, index) => {
     const type = node.id === entryId
       ? "startCall"
       : node.type === "end"
         ? "endCall"
         : "agentNode";
+    const actionToolUuids = node.type === "tool" || node.type === "transfer"
+      ? options.toolBindings?.[node.id]
+      : undefined;
+    if ((node.type === "tool" || node.type === "transfer") && !actionToolUuids?.length) {
+      throw new Error(`Workflow action node ${node.id} has no provisioned Dograh tool binding`);
+    }
 
     return {
       id: node.id,
@@ -87,6 +95,7 @@ export function toDograhWorkflowDefinition(
         prompt: promptForNode(node, config),
         allow_interrupt: true,
         wait_for_user_response: type === "agentNode",
+        ...(actionToolUuids?.length ? { tool_uuids: actionToolUuids } : {}),
       },
     };
   });
@@ -167,8 +176,26 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     if (!config.workflow.nodes.some((node) => node.type === "end")) errors.push("Workflow requires an end node");
     if (config.goal.direction !== "inbound" && !config.complianceProfile) errors.push("Outbound agents require a compliance profile");
 
+    const placeholderBindings: Record<string, string[]> = {};
+    for (const node of config.workflow.nodes) {
+      if (node.type !== "tool" && node.type !== "transfer") continue;
+      const nodeConfig = node.config as Record<string, unknown>;
+      const existingUuid = typeof nodeConfig.dograhToolUuid === "string" && nodeConfig.dograhToolUuid.trim();
+      if (node.type === "transfer") {
+        const destination = typeof nodeConfig.destination === "string" && nodeConfig.destination.trim()
+          ? nodeConfig.destination.trim()
+          : config.transferNumber;
+        if (!existingUuid && !destination) errors.push(`Transfer node ${node.id} requires a destination or dograhToolUuid`);
+      }
+      if (node.type === "tool") {
+        const url = typeof nodeConfig.url === "string" && nodeConfig.url.trim();
+        if (!existingUuid && !url) errors.push(`Tool node ${node.id} requires an HTTP url or dograhToolUuid`);
+      }
+      placeholderBindings[node.id] = [existingUuid || "validation-placeholder"];
+    }
+
     try {
-      toDograhWorkflowDefinition(config);
+      toDograhWorkflowDefinition(config, { toolBindings: placeholderBindings });
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "Invalid Dograh workflow mapping");
     }
@@ -179,7 +206,7 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
   private async createWorkflow(
     config: AgentConfig,
     name: string,
-    options: { completionWebhookUrl?: string } = {},
+    options: WorkflowCompileOptions = {},
   ): Promise<RuntimeDeployment> {
     const validation = await this.validate(config);
     if (!validation.valid) throw new Error(validation.errors.join("; "));
@@ -228,12 +255,12 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     };
   }
 
-  async deploy(config: AgentConfig, options: { completionWebhookUrl?: string } = {}): Promise<RuntimeDeployment> {
+  async deploy(config: AgentConfig, options: WorkflowCompileOptions = {}): Promise<RuntimeDeployment> {
     return this.createWorkflow(config, `${config.name} v${config.version}`, options);
   }
 
-  async deployPreview(config: AgentConfig): Promise<RuntimeDeployment> {
-    return this.createWorkflow(config, `[YOURAGENT TEST] ${config.name} v${config.version} ${Date.now()}`);
+  async deployPreview(config: AgentConfig, options: WorkflowCompileOptions = {}): Promise<RuntimeDeployment> {
+    return this.createWorkflow(config, `[YOURAGENT TEST] ${config.name} v${config.version} ${Date.now()}`, options);
   }
 
   async createEmbedToken(
