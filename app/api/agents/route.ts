@@ -2,30 +2,7 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { resolveSkills } from "@/lib/skills";
-
-const HttpActionSchema = z.object({
-  label: z.string().trim().min(2).max(80),
-  url: z.string().url().refine((value) => value.startsWith("http://") || value.startsWith("https://"), "Action URL must use HTTP(S)"),
-  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-  credentialUuid: z.string().trim().min(1).max(255).optional(),
-}).optional();
-
-const TransferSchema = z.object({
-  label: z.string().trim().min(2).max(80),
-  destination: z.string().trim().regex(/^\+\d{8,15}$/, "Transfer number must use E.164 format"),
-  message: z.string().trim().max(300).optional(),
-}).optional();
-
-const CreateAgentRequest = z.object({
-  name: z.string().trim().min(2).max(80),
-  industry: z.string().trim().min(2).max(80),
-  objective: z.string().trim().min(10).max(1000),
-  direction: z.enum(["inbound", "outbound", "both"]),
-  voiceProfile: z.string().trim().min(2).default("warm-professional"),
-  httpAction: HttpActionSchema,
-  transfer: TransferSchema,
-});
+import { AgentBuilderInputSchema, buildAgentConfig } from "@/lib/agent-builder";
 
 async function requireUser() {
   const supabase = await createSupabaseServerClient();
@@ -89,81 +66,19 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const payload = CreateAgentRequest.parse(await request.json());
+    const payload = AgentBuilderInputSchema.parse(await request.json());
     const { supabase, user } = await requireUser();
     if (!user) return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
 
     const organizationId = await ensureOrganization(supabase, user.id);
     const agentId = crypto.randomUUID();
     const versionId = crypto.randomUUID();
-    const skills = resolveSkills([
-      "conversation.active-listening",
-      "conversation.concise-human",
-      ...(payload.direction === "outbound" || payload.direction === "both"
-        ? ["sales.discovery", "compliance.opt-out"]
-        : []),
-    ]);
-
-    const workflowNodes: Array<{ id: string; type: "say" | "ask" | "tool" | "transfer" | "end"; label: string; config: Record<string, unknown> }> = [
-      { id: "start", type: "say", label: "Greeting", config: { purpose: "introduce-and-disclose" } },
-      { id: "discover", type: "ask", label: "Discover need", config: { objective: payload.objective } },
-    ];
-    if (payload.httpAction) {
-      workflowNodes.push({
-        id: "action-1",
-        type: "tool",
-        label: payload.httpAction.label,
-        config: {
-          url: payload.httpAction.url,
-          method: payload.httpAction.method,
-          description: `Use ${payload.httpAction.label} when the caller has provided the information required to complete the requested action.`,
-          ...(payload.httpAction.credentialUuid ? { credentialUuid: payload.httpAction.credentialUuid } : {}),
-        },
-      });
-    }
-    if (payload.transfer) {
-      workflowNodes.push({
-        id: "transfer-1",
-        type: "transfer",
-        label: payload.transfer.label,
-        config: {
-          destination: payload.transfer.destination,
-          ...(payload.transfer.message ? { message: payload.transfer.message } : {}),
-        },
-      });
-    }
-    workflowNodes.push({ id: "finish", type: "end", label: "Close", config: {} });
-
-    const workflowEdges = workflowNodes.slice(0, -1).map((node, index) => ({
-      from: node.id,
-      to: workflowNodes[index + 1].id,
-    }));
-
-    const config = {
-      id: agentId,
+    const config = buildAgentConfig({
+      agentId,
       organizationId,
-      name: payload.name,
-      goal: {
-        objective: payload.objective,
-        direction: payload.direction,
-        industry: payload.industry,
-      },
-      status: "draft" as const,
       version: 1,
-      voiceProfile: payload.voiceProfile,
-      llmProfile: "balanced-reasoning",
-      sttProfile: "fast-english",
-      skills,
-      workflow: {
-        nodes: workflowNodes,
-        edges: workflowEdges,
-      },
-      tools: skills.flatMap((skill) => skill.requiredTools),
-      knowledgeBaseIds: [],
-      ...(payload.transfer ? { transferNumber: payload.transfer.destination } : {}),
-      complianceProfile: payload.direction === "inbound" ? "inbound-standard" : "us-outbound-default-deny",
-      createdAt: new Date().toISOString(),
-    };
+      payload,
+    });
     const configHash = createHash("sha256").update(JSON.stringify(config)).digest("hex");
 
     const { error: agentError } = await supabase.from("agents").insert({
