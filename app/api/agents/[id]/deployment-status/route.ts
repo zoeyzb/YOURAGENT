@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DograhAdapter } from "@/lib/adapters/voice-runtime";
-import { requireDograhEnv } from "@/lib/env";
+import { resolveDograhConnection } from "@/lib/runtime-connection";
 
 export async function POST(
   request: Request,
@@ -19,7 +19,7 @@ export async function POST(
 
     const { data: deployment, error: deploymentError } = await supabase
       .from("runtime_deployments")
-      .select("id,external_deployment_id,status")
+      .select("id,organization_id,external_deployment_id,status")
       .eq("agent_id", id)
       .eq("provider", "dograh")
       .order("created_at", { ascending: false })
@@ -28,8 +28,8 @@ export async function POST(
     if (deploymentError) throw deploymentError;
     if (!deployment) return NextResponse.json({ error: "DEPLOYMENT_NOT_FOUND" }, { status: 404 });
 
-    const { baseUrl, apiKey } = requireDograhEnv();
-    const adapter = new DograhAdapter(baseUrl, apiKey);
+    const runtime = await resolveDograhConnection(deployment.organization_id);
+    const adapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
     const previousStatus = deployment.status;
 
     if (action === "pause") await adapter.pause(deployment.external_deployment_id);
@@ -62,7 +62,9 @@ export async function POST(
     return NextResponse.json({ status: nextStatus });
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-    const status = message === "SUPABASE_NOT_CONFIGURED" || message === "DOGRAH_NOT_CONFIGURED" ? 503 : 500;
+    const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED") || message === "SUPABASE_NOT_CONFIGURED"
+      ? 503
+      : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }
