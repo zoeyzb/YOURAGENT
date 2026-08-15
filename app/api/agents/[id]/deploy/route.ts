@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { AgentConfigSchema } from "@/lib/domain";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DograhAdapter } from "@/lib/adapters/voice-runtime";
-import { requireDograhEnv } from "@/lib/env";
+import { resolveDograhConnection } from "@/lib/runtime-connection";
 
 export async function POST(
   _request: Request,
@@ -37,8 +37,8 @@ export async function POST(
     if (!version) return NextResponse.json({ error: "AGENT_VERSION_NOT_FOUND" }, { status: 409 });
 
     const config = AgentConfigSchema.parse(version.config);
-    const { baseUrl, apiKey } = requireDograhEnv();
-    adapter = new DograhAdapter(baseUrl, apiKey);
+    const runtime = await resolveDograhConnection(agent.organization_id);
+    adapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
 
     const localValidation = await adapter.validate(config);
     if (!localValidation.valid) {
@@ -60,6 +60,10 @@ export async function POST(
         provider: "dograh",
         external_deployment_id: deployment.deploymentId,
         status: deployment.status,
+        metadata: {
+          runtime_source: runtime.source,
+          external_organization_id: runtime.externalOrganizationId ?? null,
+        },
       })
       .select("id,external_deployment_id,status,created_at")
       .single();
@@ -90,7 +94,9 @@ export async function POST(
     }
 
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-    const status = message === "SUPABASE_NOT_CONFIGURED" || message === "DOGRAH_NOT_CONFIGURED" ? 503 : 500;
+    const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED") || message === "SUPABASE_NOT_CONFIGURED"
+      ? 503
+      : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }
