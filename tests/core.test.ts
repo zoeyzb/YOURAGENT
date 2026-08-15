@@ -99,6 +99,40 @@ describe("Dograh runtime adapter", () => {
     );
   });
 
+  it("creates a domain-restricted Dograh headless embed token", async () => {
+    const embedScript = "<script>var js={}; js.src='https://dograh.example/embed/dograh-widget.js?token=emb_123&apiEndpoint=https://dograh.example';</script>";
+    const mockFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        token: "emb_123",
+        embed_script: embedScript,
+        expires_at: "2026-08-16T00:00:00Z",
+      }), { status: 200 }));
+
+    const adapter = new DograhAdapter("https://dograh.example", "dg_test", mockFetch);
+    const token = await adapter.createEmbedToken("dograh-workflow:42", {
+      allowedDomains: ["https://youragent.example"],
+      usageLimit: 3,
+      expiresInDays: 1,
+      settings: { widgetType: "voice", embedMode: "headless", autoStart: false },
+    });
+
+    expect(token.token).toBe("emb_123");
+    expect(token.scriptSrc).toContain("dograh-widget.js?token=emb_123");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://dograh.example/api/v1/workflow/42/embed-token",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"allowed_domains":["https://youragent.example"]'),
+      }),
+    );
+  });
+
+  it("refuses unrestricted embed tokens", async () => {
+    const adapter = new DograhAdapter("https://dograh.example", "dg_test");
+    await expect(adapter.createEmbedToken("dograh-workflow:42", { allowedDomains: [] }))
+      .rejects.toThrow(/explicit domain allowlist/i);
+  });
+
   it("rejects tool nodes until real Dograh tool UUID mapping exists", async () => {
     const config: AgentConfig = {
       ...agentConfig,
