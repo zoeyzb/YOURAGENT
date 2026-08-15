@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AgentConfigSchema } from "@/lib/domain";
 import { DograhAdapter } from "@/lib/adapters/voice-runtime";
+import { DograhToolAdapter } from "@/lib/adapters/dograh-tools";
 import { fetchDograhRun } from "@/lib/adapters/dograh-runs";
+import { provisionDograhWorkflowTools, rollbackProvisionedDograhTools } from "@/lib/runtime-tools";
 import { resolveDograhConnection } from "@/lib/runtime-connection";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -25,6 +27,12 @@ function serviceUnavailable(message: string) {
     message === "APP_ORIGIN_NOT_CONFIGURED";
 }
 
+function createdToolUuidsFromMetadata(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
+  const value = (metadata as Record<string, unknown>).created_tool_uuids;
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -32,6 +40,8 @@ export async function POST(
   const { id } = await params;
   let previewDeploymentId: string | null = null;
   let adapter: DograhAdapter | null = null;
+  let toolAdapter: DograhToolAdapter | null = null;
+  let createdToolUuids: string[] = [];
 
   try {
     const supabase = await createSupabaseServerClient();
@@ -58,8 +68,11 @@ export async function POST(
     const config = AgentConfigSchema.parse(version.config);
     const runtime = await resolveDograhConnection(agent.organization_id);
     adapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
+    toolAdapter = new DograhToolAdapter(runtime.baseUrl, runtime.apiKey);
+    const provisioned = await provisionDograhWorkflowTools(config, toolAdapter);
+    createdToolUuids = provisioned.createdToolUuids;
 
-    const preview = await adapter.deployPreview(config);
+    const preview = await adapter.deployPreview(config, { toolBindings: provisioned.bindings });
     previewDeploymentId = preview.deploymentId;
     const origin = allowedOrigin(request);
     const embed = await adapter.createEmbedToken(preview.deploymentId, {
@@ -86,12 +99,18 @@ export async function POST(
         external_deployment_id: preview.deploymentId,
         status: "created",
         expires_at: expiresAt,
+        metadata: {
+          tool_bindings: provisioned.bindings,
+          created_tool_uuids: createdToolUuids,
+          runtime_source: runtime.source,
+        },
       })
       .select("id,expires_at")
       .single();
     if (sessionError) throw sessionError;
 
     previewDeploymentId = null;
+    createdToolUuids = [];
     return NextResponse.json({
       testSession: {
         id: session.id,
@@ -107,6 +126,9 @@ export async function POST(
       } catch {
         // Preserve the root error. A reconciliation task can archive the orphan later.
       }
+    }
+    if (createdToolUuids.length && toolAdapter) {
+      await rollbackProvisionedDograhTools(toolAdapter, createdToolUuids);
     }
 
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
@@ -169,7 +191,7 @@ export async function DELETE(
 
     const { data: session, error: sessionError } = await supabase
       .from("runtime_test_sessions")
-      .select("id,organization_id,agent_id,agent_version,external_deployment_id,status,created_by,workflow_run_id")
+      .select("id,organization_id,agent_id,agent_version,external_deployment_id,status,created_by,workflow_run_id,metadata")
       .eq("id", sessionId)
       .eq("agent_id", id)
       .eq("created_by", auth.user.id)
@@ -179,6 +201,8 @@ export async function DELETE(
 
     const runtime = await resolveDograhConnection(session.organization_id);
     const adapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
+    const toolAdapter = new DograhToolAdapter(runtime.baseUrl, runtime.apiKey);
+    const createdToolUuids = createdToolUuidsFromMetadata(session.metadata);
     let callIngested = false;
     let warning: string | null = null;
 
@@ -238,6 +262,13 @@ export async function DELETE(
         await adapter.pause(session.external_deployment_id);
       } catch (error) {
         warning = warning ?? (error instanceof Error ? error.message : "PREVIEW_ARCHIVE_FAILED");
+      }
+    }
+
+    if (createdToolUuids.length) {
+      const results = await Promise.allSettled(createdToolUuids.map((toolUuid) => toolAdapter.archiveTool(toolUuid)));
+      if (results.some((result) => result.status === "rejected")) {
+        warning = warning ?? "PREVIEW_TOOL_CLEANUP_FAILED";
       }
     }
 
