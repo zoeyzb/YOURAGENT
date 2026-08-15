@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { hasDograhEnv, hasSupabaseEnv } from "@/lib/env";
+import { hasDograhEnv, hasSupabaseAdminEnv, hasSupabaseEnv } from "@/lib/env";
 
-type ServiceState = "ready" | "configured" | "missing_configuration" | "unreachable";
+type ServiceState = "ready" | "configured" | "missing_configuration" | "unreachable" | "tenant_scoped" | "disabled";
 
-async function probeDograh() {
-  if (!hasDograhEnv()) {
-    return { state: "missing_configuration" as ServiceState };
-  }
+async function probeDevelopmentDograhFallback() {
+  const fallbackEnabled = process.env.ALLOW_GLOBAL_DOGRAH_FALLBACK === "true";
+  if (!fallbackEnabled) return { state: "disabled" as ServiceState };
+  if (!hasDograhEnv()) return { state: "missing_configuration" as ServiceState };
 
   const baseUrl = process.env.DOGRAH_BASE_URL!.replace(/\/$/, "");
   try {
@@ -22,16 +22,12 @@ async function probeDograh() {
       status?: string;
       version?: string;
       deployment_mode?: string;
-      auth_provider?: string;
-      turn_enabled?: boolean;
     };
 
     return {
       state: body.status === "ok" ? "ready" as ServiceState : "unreachable" as ServiceState,
       version: body.version ?? null,
       deploymentMode: body.deployment_mode ?? null,
-      authProvider: body.auth_provider ?? null,
-      turnEnabled: body.turn_enabled ?? null,
     };
   } catch (error) {
     return {
@@ -42,17 +38,20 @@ async function probeDograh() {
 }
 
 export async function GET() {
-  const voiceRuntime = await probeDograh();
-  const databaseState: ServiceState = hasSupabaseEnv() ? "configured" : "missing_configuration";
-  const integrationState: ServiceState = process.env.NANGO_SECRET_KEY ? "configured" : "missing_configuration";
+  const databaseConfigured = hasSupabaseEnv() && hasSupabaseAdminEnv();
+  const databaseState: ServiceState = databaseConfigured ? "configured" : "missing_configuration";
+  const developmentRuntimeFallback = await probeDevelopmentDograhFallback();
 
   return NextResponse.json({
-    ok: voiceRuntime.state !== "unreachable",
+    ok: databaseConfigured,
     services: {
       web: { state: "ready" as ServiceState },
       database: { state: databaseState },
-      voiceRuntime,
-      integrations: { state: integrationState },
+      tenantVoiceRuntime: {
+        state: "tenant_scoped" as ServiceState,
+        note: "Dograh credentials are resolved per organization from runtime_connections; a global runtime is not required in production.",
+      },
+      developmentRuntimeFallback,
     },
-  });
+  }, { status: databaseConfigured ? 200 : 503 });
 }
