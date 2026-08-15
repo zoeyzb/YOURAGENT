@@ -59,13 +59,14 @@ export async function POST(
         agent_version: version.version,
         provider: "dograh",
         external_deployment_id: deployment.deploymentId,
+        external_workflow_uuid: deployment.workflowUuid,
         status: deployment.status,
         metadata: {
           runtime_source: runtime.source,
           external_organization_id: runtime.externalOrganizationId ?? null,
         },
       })
-      .select("id,external_deployment_id,status,created_at")
+      .select("id,external_deployment_id,external_workflow_uuid,status,created_at")
       .single();
     if (persistenceError) throw persistenceError;
 
