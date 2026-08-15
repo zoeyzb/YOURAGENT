@@ -8,6 +8,12 @@ export type RuntimeDeployment = {
   status: "ready" | "failed";
 };
 
+export type EmbedToken = {
+  token: string;
+  scriptSrc: string;
+  expiresAt: string | null;
+};
+
 export interface VoiceRuntimeAdapter {
   validate(config: AgentConfig): Promise<{ valid: boolean; errors: string[] }>;
   deploy(config: AgentConfig): Promise<RuntimeDeployment>;
@@ -19,6 +25,12 @@ const DograhWorkflowResponse = z.object({
   id: z.number().int().positive(),
   status: z.string(),
   workflow_uuid: z.string().nullable().optional(),
+});
+
+const DograhEmbedTokenResponse = z.object({
+  token: z.string().min(1),
+  embed_script: z.string().min(1),
+  expires_at: z.string().nullable().optional(),
 });
 
 function promptForNode(node: AgentConfig["workflow"]["nodes"][number], config: AgentConfig) {
@@ -106,7 +118,7 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     };
   }
 
-  private workflowId(deploymentId: string) {
+  workflowId(deploymentId: string) {
     const match = /^dograh-workflow:(\d+)$/.exec(deploymentId);
     if (!match) throw new Error("Unknown Dograh deployment id");
     return match[1];
@@ -141,7 +153,7 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     return { valid: errors.length === 0, errors };
   }
 
-  async deploy(config: AgentConfig): Promise<RuntimeDeployment> {
+  private async createWorkflow(config: AgentConfig, name: string): Promise<RuntimeDeployment> {
     const validation = await this.validate(config);
     if (!validation.valid) throw new Error(validation.errors.join("; "));
     if (!this.baseUrl || !this.apiKey) throw new Error("Dograh runtime credentials are not configured");
@@ -150,7 +162,7 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
-        name: `${config.name} v${config.version}`,
+        name,
         workflow_definition: toDograhWorkflowDefinition(config),
       }),
     });
@@ -185,6 +197,54 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
       agentId: config.id,
       version: config.version,
       status: "ready",
+    };
+  }
+
+  async deploy(config: AgentConfig): Promise<RuntimeDeployment> {
+    return this.createWorkflow(config, `${config.name} v${config.version}`);
+  }
+
+  async deployPreview(config: AgentConfig): Promise<RuntimeDeployment> {
+    return this.createWorkflow(config, `[YOURAGENT TEST] ${config.name} v${config.version} ${Date.now()}`);
+  }
+
+  async createEmbedToken(
+    deploymentId: string,
+    options: {
+      allowedDomains: string[];
+      usageLimit?: number;
+      expiresInDays?: number;
+      settings?: Record<string, unknown>;
+    },
+  ): Promise<EmbedToken> {
+    if (!this.baseUrl || !this.apiKey) throw new Error("Dograh runtime credentials are not configured");
+    if (!options.allowedDomains.length) throw new Error("Embed token requires an explicit domain allowlist");
+
+    const workflowId = this.workflowId(deploymentId);
+    const response = await this.fetchImpl(this.apiUrl(`/workflow/${workflowId}/embed-token`), {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        allowed_domains: options.allowedDomains,
+        settings: options.settings ?? { widgetType: "voice", embedMode: "headless", autoStart: false },
+        usage_limit: options.usageLimit ?? 5,
+        expires_in_days: options.expiresInDays ?? 1,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Dograh create embed token failed (${response.status}): ${detail.slice(0, 500)}`);
+    }
+
+    const token = DograhEmbedTokenResponse.parse(await response.json());
+    const scriptMatch = /js\.src\s*=\s*['"]([^'"]+)['"]/.exec(token.embed_script);
+    if (!scriptMatch) throw new Error("Dograh embed response did not include a widget script URL");
+
+    return {
+      token: token.token,
+      scriptSrc: scriptMatch[1],
+      expiresAt: token.expires_at ?? null,
     };
   }
 
