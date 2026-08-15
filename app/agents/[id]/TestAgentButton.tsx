@@ -38,8 +38,26 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
   const [status, setStatus] = useState<"idle" | "preparing" | "ready" | "connecting" | "connected" | "ending" | "error">("idle");
   const [error, setError] = useState("");
   const sessionId = useRef<string | null>(null);
+  const registeredRunId = useRef<number | null>(null);
   const injectedScript = useRef<HTMLScriptElement | null>(null);
   const cleaning = useRef(false);
+
+  async function registerRun() {
+    const id = sessionId.current;
+    const runId = window.DograhWidget?.getState().workflowRunId ?? null;
+    if (!id || !runId || registeredRunId.current === runId) return;
+
+    const response = await fetch(`/api/agents/${agentId}/test-session`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: id, runId }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? "Could not register Dograh test run");
+    }
+    registeredRunId.current = runId;
+  }
 
   async function archivePreview() {
     if (!sessionId.current || cleaning.current) return;
@@ -47,8 +65,12 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
     const id = sessionId.current;
     sessionId.current = null;
     try {
-      await fetch(`/api/agents/${agentId}/test-session?sessionId=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const response = await fetch(`/api/agents/${agentId}/test-session?sessionId=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? "Could not clean up Dograh test preview");
+      if (body.warning) setError(`Test ended, but cleanup reported: ${body.warning}`);
     } finally {
+      registeredRunId.current = null;
       cleaning.current = false;
     }
   }
@@ -64,12 +86,20 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
 
   async function reset() {
     try {
+      await registerRun();
+    } catch {
+      // Cleanup still owns the preview even if run registration failed.
+    }
+    try {
       await window.DograhWidget?.stop();
     } catch {
       // Runtime may already be disconnected.
     }
-    await archivePreview();
-    removeWidgetArtifacts();
+    try {
+      await archivePreview();
+    } finally {
+      removeWidgetArtifacts();
+    }
   }
 
   useEffect(() => {
@@ -126,10 +156,22 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
             if (next === "connected") setStatus("connected");
             if (next === "failed") setStatus("error");
           });
-          widget.onCallConnected(() => setStatus("connected"));
+          widget.onCallConnected(() => {
+            setStatus("connected");
+            void registerRun().catch((cause) => {
+              setError(cause instanceof Error ? cause.message : "Could not register Dograh test run");
+            });
+          });
           widget.onCallEnd(() => {
             setStatus("idle");
-            void archivePreview();
+            void (async () => {
+              try {
+                await registerRun();
+                await archivePreview();
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : "Could not finalize test run");
+              }
+            })();
           });
           widget.onError((cause) => {
             setError(cause instanceof Error ? cause.message : "Dograh test runtime failed");
@@ -153,13 +195,17 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
     setStatus("ending");
     setError("");
     try {
+      await registerRun();
       await window.DograhWidget?.end();
-    } catch {
-      // Cleanup still runs below.
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Test agent cleanup failed");
     }
-    await archivePreview();
-    removeWidgetArtifacts();
-    setStatus("idle");
+    try {
+      await archivePreview();
+    } finally {
+      removeWidgetArtifacts();
+      setStatus("idle");
+    }
   }
 
   const active = ["ready", "connecting", "connected", "ending"].includes(status);
