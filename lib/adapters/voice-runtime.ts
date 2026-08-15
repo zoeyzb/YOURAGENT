@@ -17,7 +17,7 @@ export type EmbedToken = {
 
 export interface VoiceRuntimeAdapter {
   validate(config: AgentConfig): Promise<{ valid: boolean; errors: string[] }>;
-  deploy(config: AgentConfig): Promise<RuntimeDeployment>;
+  deploy(config: AgentConfig, options?: { completionWebhookUrl?: string }): Promise<RuntimeDeployment>;
   pause(deploymentId: string): Promise<void>;
   resume(deploymentId: string): Promise<void>;
 }
@@ -54,7 +54,10 @@ function promptForNode(node: AgentConfig["workflow"]["nodes"][number], config: A
   return node.label;
 }
 
-export function toDograhWorkflowDefinition(config: AgentConfig) {
+export function toDograhWorkflowDefinition(
+  config: AgentConfig,
+  options: { completionWebhookUrl?: string } = {},
+) {
   const incoming = new Map<string, number>();
   for (const node of config.workflow.nodes) incoming.set(node.id, 0);
   for (const edge of config.workflow.edges) incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
@@ -68,7 +71,7 @@ export function toDograhWorkflowDefinition(config: AgentConfig) {
     throw new Error(`Dograh tool mapping is not configured for nodes: ${unsupported.map((node) => node.id).join(", ")}`);
   }
 
-  const nodes = config.workflow.nodes.map((node, index) => {
+  const nodes: Array<Record<string, unknown>> = config.workflow.nodes.map((node, index) => {
     const type = node.id === entryId
       ? "startCall"
       : node.type === "end"
@@ -87,6 +90,25 @@ export function toDograhWorkflowDefinition(config: AgentConfig) {
       },
     };
   });
+
+  if (options.completionWebhookUrl) {
+    nodes.push({
+      id: "youragent-completion-webhook",
+      type: "webhook",
+      position: { x: 0, y: 500 },
+      data: {
+        name: "YOURAGENT Completion Sync",
+        enabled: true,
+        http_method: "POST",
+        endpoint_url: options.completionWebhookUrl,
+        payload_template: {
+          workflow_run_id: "{{workflow_run_id}}",
+          workflow_id: "{{workflow_id}}",
+          youragent_call_id: "{{initial_context.youragent_call_id}}",
+        },
+      },
+    });
+  }
 
   const edges = config.workflow.edges.map((edge, index) => ({
     id: `edge-${index + 1}-${edge.from}-${edge.to}`,
@@ -154,7 +176,11 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     return { valid: errors.length === 0, errors };
   }
 
-  private async createWorkflow(config: AgentConfig, name: string): Promise<RuntimeDeployment> {
+  private async createWorkflow(
+    config: AgentConfig,
+    name: string,
+    options: { completionWebhookUrl?: string } = {},
+  ): Promise<RuntimeDeployment> {
     const validation = await this.validate(config);
     if (!validation.valid) throw new Error(validation.errors.join("; "));
     if (!this.baseUrl || !this.apiKey) throw new Error("Dograh runtime credentials are not configured");
@@ -164,7 +190,7 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
       headers: this.headers(),
       body: JSON.stringify({
         name,
-        workflow_definition: toDograhWorkflowDefinition(config),
+        workflow_definition: toDograhWorkflowDefinition(config, options),
       }),
     });
 
@@ -202,8 +228,8 @@ export class DograhAdapter implements VoiceRuntimeAdapter {
     };
   }
 
-  async deploy(config: AgentConfig): Promise<RuntimeDeployment> {
-    return this.createWorkflow(config, `${config.name} v${config.version}`);
+  async deploy(config: AgentConfig, options: { completionWebhookUrl?: string } = {}): Promise<RuntimeDeployment> {
+    return this.createWorkflow(config, `${config.name} v${config.version}`, options);
   }
 
   async deployPreview(config: AgentConfig): Promise<RuntimeDeployment> {
