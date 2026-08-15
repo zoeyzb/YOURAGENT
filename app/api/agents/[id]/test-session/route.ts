@@ -3,7 +3,7 @@ import { z } from "zod";
 import { AgentConfigSchema } from "@/lib/domain";
 import { DograhAdapter } from "@/lib/adapters/voice-runtime";
 import { fetchDograhRun } from "@/lib/adapters/dograh-runs";
-import { requireDograhEnv } from "@/lib/env";
+import { resolveDograhConnection } from "@/lib/runtime-connection";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const RegisterRunRequest = z.object({
@@ -17,6 +17,12 @@ function allowedOrigin(request: Request) {
   const url = new URL(raw);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("INVALID_APP_ORIGIN");
   return url.origin;
+}
+
+function serviceUnavailable(message: string) {
+  return message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED") ||
+    message === "SUPABASE_NOT_CONFIGURED" ||
+    message === "APP_ORIGIN_NOT_CONFIGURED";
 }
 
 export async function POST(
@@ -50,8 +56,8 @@ export async function POST(
     if (!version) return NextResponse.json({ error: "AGENT_VERSION_NOT_FOUND" }, { status: 409 });
 
     const config = AgentConfigSchema.parse(version.config);
-    const { baseUrl, apiKey } = requireDograhEnv();
-    adapter = new DograhAdapter(baseUrl, apiKey);
+    const runtime = await resolveDograhConnection(agent.organization_id);
+    adapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
 
     const preview = await adapter.deployPreview(config);
     previewDeploymentId = preview.deploymentId;
@@ -104,8 +110,7 @@ export async function POST(
     }
 
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-    const status = ["SUPABASE_NOT_CONFIGURED", "DOGRAH_NOT_CONFIGURED", "APP_ORIGIN_NOT_CONFIGURED"].includes(message) ? 503 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message }, { status: serviceUnavailable(message) ? 503 : 500 });
   }
 }
 
@@ -172,8 +177,8 @@ export async function DELETE(
     if (sessionError) throw sessionError;
     if (!session) return NextResponse.json({ error: "TEST_SESSION_NOT_FOUND" }, { status: 404 });
 
-    const { baseUrl, apiKey } = requireDograhEnv();
-    const adapter = new DograhAdapter(baseUrl, apiKey);
+    const runtime = await resolveDograhConnection(session.organization_id);
+    const adapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
     let callIngested = false;
     let warning: string | null = null;
 
@@ -182,8 +187,8 @@ export async function DELETE(
         const run = await fetchDograhRun({
           deploymentId: session.external_deployment_id,
           runId: session.workflow_run_id,
-          baseUrl,
-          apiKey,
+          baseUrl: runtime.baseUrl,
+          apiKey: runtime.apiKey,
         });
 
         const callPayload = {
@@ -206,6 +211,7 @@ export async function DELETE(
             mode: run.mode,
             initial_context: run.initial_context ?? null,
             annotations: run.annotations ?? null,
+            runtime_source: runtime.source,
           },
         };
 
@@ -248,7 +254,6 @@ export async function DELETE(
     return NextResponse.json({ status: warning ? "failed" : "completed", callIngested, warning });
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-    const status = message === "SUPABASE_NOT_CONFIGURED" || message === "DOGRAH_NOT_CONFIGURED" ? 503 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message }, { status: serviceUnavailable(message) ? 503 : 500 });
   }
 }
