@@ -83,6 +83,10 @@ export class DograhTelephonyAdapter {
     return TelephonyConfigurationDetail.parse(await response.json());
   }
 
+  async deleteConfiguration(configurationId: number | string) {
+    await this.request(`/telephony-configs/${configurationId}`, { method: "DELETE" });
+  }
+
   async addPhoneNumber(input: {
     configurationId: number | string;
     address: string;
@@ -104,6 +108,10 @@ export class DograhTelephonyAdapter {
       }),
     });
     return PhoneNumberResponse.parse(await response.json());
+  }
+
+  async deletePhoneNumber(configurationId: number | string, phoneNumberId: number | string) {
+    await this.request(`/telephony-configs/${configurationId}/phone-numbers/${phoneNumberId}`, { method: "DELETE" });
   }
 
   async listPhoneNumbers(configurationId: number | string): Promise<DograhPhoneNumber[]> {
