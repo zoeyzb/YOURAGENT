@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { hasSupabaseEnv } from "@/lib/env";
+import { RefreshCallButton } from "./RefreshCallButton";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +68,7 @@ export default async function CallsPage() {
           </div>
           <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
             <strong>{summarizeCost(call.cost_info as CostInfo)}</strong>
+            {call.external_run_id ? <RefreshCallButton callId={call.id} /> : null}
             {call.transcript_url ? <a className="btn" href={call.transcript_url} target="_blank" rel="noreferrer">Transcript</a> : null}
             {call.recording_url ? <a className="btn" href={call.recording_url} target="_blank" rel="noreferrer">Recording</a> : null}
             <Link className="btn" href={`/agents/${call.agent_id}`}>Agent</Link>
