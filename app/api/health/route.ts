@@ -1,7 +1,33 @@
 import { NextResponse } from "next/server";
 import { hasDograhEnv, hasSupabaseAdminEnv, hasSupabaseEnv } from "@/lib/env";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 type ServiceState = "ready" | "configured" | "missing_configuration" | "unreachable" | "tenant_scoped" | "disabled";
+
+async function probeDatabase() {
+  if (!hasSupabaseEnv() || !hasSupabaseAdminEnv()) {
+    return { state: "missing_configuration" as ServiceState };
+  }
+
+  try {
+    const admin = createSupabaseAdminClient();
+    const { error } = await admin
+      .from("organizations")
+      .select("id", { count: "exact", head: true });
+    if (error) {
+      return {
+        state: "unreachable" as ServiceState,
+        error: "DATABASE_SCHEMA_UNAVAILABLE",
+      };
+    }
+    return { state: "ready" as ServiceState };
+  } catch (error) {
+    return {
+      state: "unreachable" as ServiceState,
+      error: error instanceof Error ? error.message : "DATABASE_HEALTH_ERROR",
+    };
+  }
+}
 
 async function probeDevelopmentDograhFallback() {
   const fallbackEnabled = process.env.ALLOW_GLOBAL_DOGRAH_FALLBACK === "true";
@@ -38,20 +64,22 @@ async function probeDevelopmentDograhFallback() {
 }
 
 export async function GET() {
-  const databaseConfigured = hasSupabaseEnv() && hasSupabaseAdminEnv();
-  const databaseState: ServiceState = databaseConfigured ? "configured" : "missing_configuration";
-  const developmentRuntimeFallback = await probeDevelopmentDograhFallback();
+  const [database, developmentRuntimeFallback] = await Promise.all([
+    probeDatabase(),
+    probeDevelopmentDograhFallback(),
+  ]);
+  const databaseReady = database.state === "ready";
 
   return NextResponse.json({
-    ok: databaseConfigured,
+    ok: databaseReady,
     services: {
       web: { state: "ready" as ServiceState },
-      database: { state: databaseState },
+      database,
       tenantVoiceRuntime: {
         state: "tenant_scoped" as ServiceState,
         note: "Dograh credentials are resolved per organization from runtime_connections; a global runtime is not required in production.",
       },
       developmentRuntimeFallback,
     },
-  }, { status: databaseConfigured ? 200 : 503 });
+  }, { status: databaseReady ? 200 : 503 });
 }
