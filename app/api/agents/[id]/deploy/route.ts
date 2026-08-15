@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "crypto";
 import { NextResponse } from "next/server";
 import { AgentConfigSchema } from "@/lib/domain";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -5,7 +6,7 @@ import { DograhAdapter } from "@/lib/adapters/voice-runtime";
 import { resolveDograhConnection } from "@/lib/runtime-connection";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
@@ -48,7 +49,12 @@ export async function POST(
       );
     }
 
-    const deployment = await adapter.deploy(config);
+    const webhookToken = randomBytes(32).toString("base64url");
+    const webhookTokenHash = createHash("sha256").update(webhookToken).digest("hex");
+    const appOrigin = new URL(request.url).origin;
+    const completionWebhookUrl = `${appOrigin}/api/webhooks/dograh?token=${encodeURIComponent(webhookToken)}`;
+
+    const deployment = await adapter.deploy(config, { completionWebhookUrl });
     remoteDeploymentId = deployment.deploymentId;
 
     const { data: persisted, error: persistenceError } = await supabase
@@ -60,10 +66,12 @@ export async function POST(
         provider: "dograh",
         external_deployment_id: deployment.deploymentId,
         external_workflow_uuid: deployment.workflowUuid,
+        webhook_token_hash: webhookTokenHash,
         status: deployment.status,
         metadata: {
           runtime_source: runtime.source,
           external_organization_id: runtime.externalOrganizationId ?? null,
+          completion_webhook_configured: true,
         },
       })
       .select("id,external_deployment_id,external_workflow_uuid,status,created_at")
