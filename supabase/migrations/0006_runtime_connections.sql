@@ -66,3 +66,77 @@ revoke all on function public.resolve_runtime_connection_secret(uuid, text) from
 revoke all on function public.resolve_runtime_connection_secret(uuid, text) from anon;
 revoke all on function public.resolve_runtime_connection_secret(uuid, text) from authenticated;
 grant execute on function public.resolve_runtime_connection_secret(uuid, text) to service_role;
+
+create or replace function public.upsert_runtime_connection_secret(
+  p_organization_id uuid,
+  p_provider text,
+  p_base_url text,
+  p_api_key text,
+  p_external_organization_id text default null,
+  p_metadata jsonb default '{}'::jsonb
+) returns uuid
+language plpgsql
+security definer
+set search_path = public, vault
+as $$
+declare
+  existing_secret_id uuid;
+  next_secret_id uuid;
+begin
+  if p_provider <> 'dograh' then
+    raise exception 'unsupported runtime provider';
+  end if;
+  if length(trim(p_base_url)) = 0 or length(trim(p_api_key)) = 0 then
+    raise exception 'runtime base URL and API key are required';
+  end if;
+
+  select secret_id into existing_secret_id
+  from public.runtime_connections
+  where organization_id = p_organization_id and provider = p_provider;
+
+  if existing_secret_id is null then
+    select vault.create_secret(
+      p_api_key,
+      'youragent_' || p_provider || '_' || p_organization_id::text,
+      'YOURAGENT runtime credential for organization ' || p_organization_id::text
+    ) into next_secret_id;
+  else
+    perform vault.update_secret(existing_secret_id, p_api_key);
+    next_secret_id := existing_secret_id;
+  end if;
+
+  insert into public.runtime_connections (
+    organization_id,
+    provider,
+    base_url,
+    secret_id,
+    external_organization_id,
+    status,
+    metadata,
+    updated_at
+  ) values (
+    p_organization_id,
+    p_provider,
+    trim(trailing '/' from p_base_url),
+    next_secret_id,
+    p_external_organization_id,
+    'active',
+    coalesce(p_metadata, '{}'::jsonb),
+    now()
+  )
+  on conflict (organization_id, provider) do update set
+    base_url = excluded.base_url,
+    secret_id = excluded.secret_id,
+    external_organization_id = excluded.external_organization_id,
+    status = 'active',
+    metadata = excluded.metadata,
+    updated_at = now();
+
+  return next_secret_id;
+end;
+$$;
+
+revoke all on function public.upsert_runtime_connection_secret(uuid, text, text, text, text, jsonb) from public;
+revoke all on function public.upsert_runtime_connection_secret(uuid, text, text, text, text, jsonb) from anon;
+revoke all on function public.upsert_runtime_connection_secret(uuid, text, text, text, text, jsonb) from authenticated;
+grant execute on function public.upsert_runtime_connection_secret(uuid, text, text, text, text, jsonb) to service_role;
