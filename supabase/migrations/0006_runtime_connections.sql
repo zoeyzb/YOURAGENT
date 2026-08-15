@@ -1,5 +1,7 @@
 create extension if not exists supabase_vault with schema vault;
 
+alter table runtime_deployments add column if not exists metadata jsonb not null default '{}'::jsonb;
+
 create table if not exists runtime_connections (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
