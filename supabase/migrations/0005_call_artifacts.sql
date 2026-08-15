@@ -7,9 +7,8 @@ alter table calls add column if not exists usage_info jsonb;
 alter table calls add column if not exists gathered_context jsonb;
 alter table calls add column if not exists is_test boolean not null default false;
 
-create unique index if not exists calls_runtime_run_unique
-  on calls(runtime_provider, external_run_id)
-  where external_run_id is not null;
+alter table calls
+  add constraint calls_runtime_run_unique unique (runtime_provider, external_run_id);
 
 create policy "admins can mutate calls in their org" on calls
 for all to authenticated
