@@ -111,52 +111,89 @@ export async function POST(request: Request) {
 
     const runtime = await resolveDograhConnection(payload.organizationId);
     const callId = randomUUID();
-    const triggered = await triggerDograhOutboundCall({
-      baseUrl: runtime.baseUrl,
-      apiKey: runtime.apiKey,
-      workflowUuid: deployment.external_workflow_uuid,
-      phoneNumber: payload.phoneNumber,
-      telephonyConfigurationId: telephonyConfigId,
-      fromPhoneNumberId,
-      initialContext: {
-        source: "youragent_manual_outbound",
-        youragent_call_id: callId,
-      },
-    });
+    const startedAt = new Date().toISOString();
+    const baseMetadata = {
+      target_phone_number: payload.phoneNumber,
+      target_timezone: payload.timezone,
+      target_local_hour: hour,
+      jurisdiction: payload.jurisdiction,
+      consent_note: payload.consentNote,
+      consent_confirmed: payload.consent,
+      do_not_call_checked: payload.dncClear,
+      policy_reasons: policy.reasons,
+      telephony_configuration_id: telephonyConfigId,
+      from_phone_number_id: fromPhoneNumberId,
+      caller_id: phoneRoute.address,
+      initiated_by: user.id,
+      runtime_source: runtime.source,
+      dispatch_state: "pending",
+    };
 
-    const { data: call, error: callError } = await supabase
+    const { error: auditInsertError } = await supabase.from("calls").insert({
+      id: callId,
+      organization_id: payload.organizationId,
+      agent_id: payload.agentId,
+      agent_version: version.version,
+      runtime_provider: "dograh",
+      direction: "outbound",
+      status: "dispatching",
+      started_at: startedAt,
+      is_test: false,
+      metadata: baseMetadata,
+    });
+    if (auditInsertError) throw auditInsertError;
+
+    let triggered;
+    try {
+      triggered = await triggerDograhOutboundCall({
+        baseUrl: runtime.baseUrl,
+        apiKey: runtime.apiKey,
+        workflowUuid: deployment.external_workflow_uuid,
+        phoneNumber: payload.phoneNumber,
+        telephonyConfigurationId: telephonyConfigId,
+        fromPhoneNumberId,
+        initialContext: {
+          source: "youragent_manual_outbound",
+          youragent_call_id: callId,
+        },
+      });
+    } catch (dispatchError) {
+      const dispatchMessage = dispatchError instanceof Error ? dispatchError.message : "DOGRAH_DISPATCH_FAILED";
+      await supabase.from("calls").update({
+        status: "failed",
+        ended_at: new Date().toISOString(),
+        metadata: { ...baseMetadata, dispatch_state: "failed", dispatch_error: dispatchMessage },
+      }).eq("id", callId);
+      throw dispatchError;
+    }
+
+    const { data: call, error: callUpdateError } = await supabase
       .from("calls")
-      .insert({
-        id: callId,
-        organization_id: payload.organizationId,
-        agent_id: payload.agentId,
-        agent_version: version.version,
+      .update({
         provider_call_id: String(triggered.workflow_run_id),
-        runtime_provider: "dograh",
         external_run_id: String(triggered.workflow_run_id),
-        direction: "outbound",
         status: triggered.status,
-        started_at: new Date().toISOString(),
-        is_test: false,
         metadata: {
+          ...baseMetadata,
+          dispatch_state: "accepted",
           workflow_run_name: triggered.workflow_run_name,
-          target_phone_number: payload.phoneNumber,
-          target_timezone: payload.timezone,
-          target_local_hour: hour,
-          jurisdiction: payload.jurisdiction,
-          consent_note: payload.consentNote,
-          do_not_call_checked: payload.dncClear,
-          policy_reasons: policy.reasons,
-          telephony_configuration_id: telephonyConfigId,
-          from_phone_number_id: fromPhoneNumberId,
-          caller_id: phoneRoute.address,
-          initiated_by: user.id,
-          runtime_source: runtime.source,
         },
       })
+      .eq("id", callId)
       .select("id,status,external_run_id,started_at")
       .single();
-    if (callError) throw callError;
+    if (callUpdateError) {
+      await supabase.from("calls").update({
+        status: "dispatch_uncertain",
+        metadata: {
+          ...baseMetadata,
+          dispatch_state: "accepted_but_persistence_failed",
+          workflow_run_id: triggered.workflow_run_id,
+          workflow_run_name: triggered.workflow_run_name,
+        },
+      }).eq("id", callId);
+      throw callUpdateError;
+    }
 
     return NextResponse.json({ call }, { status: 201 });
   } catch (error) {
