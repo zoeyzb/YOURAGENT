@@ -4,6 +4,7 @@ import { MemoryIdempotencyStore, once } from "@/lib/idempotency";
 import { resolveSkills } from "@/lib/skills";
 import type { AgentConfig } from "@/lib/domain";
 import { DograhAdapter, toDograhWorkflowDefinition } from "@/lib/adapters/voice-runtime";
+import { DograhTelephonyAdapter } from "@/lib/adapters/dograh-telephony";
 
 const agentConfig: AgentConfig = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -153,5 +154,94 @@ describe("Dograh runtime adapter", () => {
     const validation = await adapter.validate(config);
     expect(validation.valid).toBe(false);
     expect(validation.errors.join(" ")).toMatch(/tool mapping is not configured/i);
+  });
+});
+
+describe("Dograh telephony adapter", () => {
+  it("creates a Twilio configuration through Dograh's multi-config endpoint", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 7,
+      name: "Twilio Default",
+      provider: "twilio",
+      is_default_outbound: true,
+      inactive: false,
+      credentials: { account_sid: "****************1234", auth_token: "****************abcd", amd_enabled: false },
+      created_at: "2026-08-15T00:00:00Z",
+      updated_at: "2026-08-15T00:00:00Z",
+    }), { status: 200 }));
+
+    const adapter = new DograhTelephonyAdapter("https://dograh.example", "dg_test", mockFetch);
+    const config = await adapter.createTwilioConfiguration({
+      name: "Twilio Default",
+      accountSid: "AC1234567890",
+      authToken: "secret-token",
+    });
+
+    expect(config.id).toBe(7);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://dograh.example/api/v1/organizations/telephony-configs",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"provider":"twilio"'),
+      }),
+    );
+  });
+
+  it("routes a phone number to a real Dograh workflow", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 91,
+      telephony_configuration_id: 7,
+      address: "+13125551234",
+      address_normalized: "+13125551234",
+      address_type: "pstn",
+      country_code: "US",
+      label: "Main line",
+      inbound_workflow_id: 42,
+      inbound_workflow_name: "Agent",
+      is_active: true,
+      is_default_caller_id: true,
+      provider_sync: { ok: true, message: null },
+    }), { status: 200 }));
+
+    const adapter = new DograhTelephonyAdapter("https://dograh.example", "dg_test", mockFetch);
+    const number = await adapter.addPhoneNumber({
+      configurationId: 7,
+      address: "+13125551234",
+      countryCode: "US",
+      label: "Main line",
+      inboundWorkflowId: 42,
+      isDefaultCallerId: true,
+    });
+
+    expect(number.inbound_workflow_id).toBe(42);
+    expect(number.provider_sync?.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://dograh.example/api/v1/organizations/telephony-configs/7/phone-numbers",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"inbound_workflow_id":42'),
+      }),
+    );
+  });
+
+  it("uses Dograh delete endpoints for rollback", async () => {
+    const mockFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "deleted" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "deleted" }), { status: 200 }));
+    const adapter = new DograhTelephonyAdapter("https://dograh.example", "dg_test", mockFetch);
+
+    await adapter.deletePhoneNumber(7, 91);
+    await adapter.deleteConfiguration(7);
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      "https://dograh.example/api/v1/organizations/telephony-configs/7/phone-numbers/91",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      "https://dograh.example/api/v1/organizations/telephony-configs/7",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 });
