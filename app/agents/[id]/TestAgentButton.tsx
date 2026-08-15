@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 type DograhState = {
+  isInitialized?: boolean;
   workflowRunId?: number | null;
   connectionStatus?: string;
 };
@@ -75,8 +76,6 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
     return () => {
       void reset();
     };
-    // Cleanup intentionally only runs on unmount; agentId is stable per page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function startTest() {
@@ -114,10 +113,14 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
             reject(new Error("Dograh widget API is unavailable"));
             return;
           }
-          widget.onReady(() => {
+
+          const resolveReady = () => {
             window.clearTimeout(timeout);
             resolve();
-          });
+          };
+          widget.onReady(resolveReady);
+          if (widget.getState().isInitialized) resolveReady();
+
           widget.onStatusChange((next) => {
             if (next === "connecting") setStatus("connecting");
             if (next === "connected") setStatus("connected");
