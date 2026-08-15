@@ -15,8 +15,8 @@ const OutboundCallRequest = z.object({
   timezone: z.string().min(1),
   jurisdiction: z.string().min(2).max(64),
   consent: z.literal(true),
+  dncClear: z.literal(true),
   consentNote: z.string().min(3).max(500),
-  doNotCall: z.boolean().optional().default(false),
 });
 
 function localHour(timezone: string) {
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
     const policy = evaluateCallPolicy({
       direction: "outbound",
       consent: payload.consent,
-      doNotCall: payload.doNotCall,
+      doNotCall: !payload.dncClear,
       localHour: hour,
       jurisdiction: payload.jurisdiction,
     });
@@ -145,7 +145,7 @@ export async function POST(request: Request) {
           target_local_hour: hour,
           jurisdiction: payload.jurisdiction,
           consent_note: payload.consentNote,
-          do_not_call_checked: !payload.doNotCall,
+          do_not_call_checked: payload.dncClear,
           policy_reasons: policy.reasons,
           telephony_configuration_id: telephonyConfigId,
           from_phone_number_id: fromPhoneNumberId,
