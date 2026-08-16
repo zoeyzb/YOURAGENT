@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DograhAdapter } from "@/lib/adapters/voice-runtime";
 import { DograhTelephonyAdapter } from "@/lib/adapters/dograh-telephony";
+import { query } from "@/lib/db";
+import { organizationAuthErrorStatus, requireOrganizationAdmin } from "@/lib/org-auth";
 import { resolveDograhConnection } from "@/lib/runtime-connection";
 
 type RouteRow = {
@@ -12,9 +13,7 @@ type RouteRow = {
   label: string | null;
   is_active: boolean;
 };
-
 type ConnectionRow = { id: string; external_config_id: string; status: string };
-
 type ChangedRoute = { route: RouteRow; configurationId: string };
 
 function deploymentWorkflowId(deploymentId: string) {
@@ -25,7 +24,6 @@ function deploymentWorkflowId(deploymentId: string) {
 
 async function restoreRoutes(options: {
   adapter: DograhTelephonyAdapter;
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
   changed: ChangedRoute[];
   workflowId: number;
   active: boolean;
@@ -39,24 +37,15 @@ async function restoreRoutes(options: {
         label: item.route.label,
         isActive: options.active,
       });
-      await options.supabase
-        .from("phone_number_routes")
-        .update({
-          is_active: options.active,
-          provider_sync_ok: restored.provider_sync?.ok ?? null,
-          provider_sync_message: restored.provider_sync?.message ?? null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", item.route.id);
+      await query(
+        `update phone_number_routes set is_active = $1, provider_sync_ok = $2, provider_sync_message = $3, updated_at = now() where id = $4`,
+        [options.active, restored.provider_sync?.ok ?? null, restored.provider_sync?.message ?? null, item.route.id],
+      );
     } catch {
-      await options.supabase
-        .from("phone_number_routes")
-        .update({
-          provider_sync_ok: false,
-          provider_sync_message: "Pause/resume rollback requires reconciliation",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", item.route.id);
+      await query(
+        `update phone_number_routes set provider_sync_ok = false, provider_sync_message = 'Pause/resume rollback requires reconciliation', updated_at = now() where id = $1`,
+        [item.route.id],
+      );
     }
   }
 }
@@ -75,67 +64,47 @@ export async function POST(
   let deployment: { id: string; organization_id: string; external_deployment_id: string; status: string } | null = null;
   let voiceAdapter: DograhAdapter | null = null;
   let telephonyAdapter: DograhTelephonyAdapter | null = null;
-  let supabase: Awaited<ReturnType<typeof createSupabaseServerClient>> | null = null;
   let workflowId: number | null = null;
 
   try {
-    supabase = await createSupabaseServerClient();
-    const { data: auth, error: authError } = await supabase.auth.getUser();
-    if (authError || !auth.user) return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
-
-    const { data: agent, error: agentError } = await supabase
-      .from("agents")
-      .select("id,organization_id,current_version")
-      .eq("id", id)
-      .maybeSingle();
-    if (agentError) throw agentError;
+    const agent = (await query<{ id: string; organization_id: string; current_version: number }>(
+      `select id, organization_id, current_version from agents where id = $1 limit 1`,
+      [id],
+    )).rows[0];
     if (!agent) return NextResponse.json({ error: "AGENT_NOT_FOUND" }, { status: 404 });
+    await requireOrganizationAdmin(agent.organization_id, request.headers);
 
     const desiredStatus = action === "pause" ? "ready" : "paused";
-    const { data: deploymentData, error: deploymentError } = await supabase
-      .from("runtime_deployments")
-      .select("id,organization_id,external_deployment_id,status")
-      .eq("agent_id", id)
-      .eq("agent_version", agent.current_version)
-      .eq("provider", "dograh")
-      .eq("status", desiredStatus)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (deploymentError) throw deploymentError;
-    if (!deploymentData) return NextResponse.json({ error: "DEPLOYMENT_NOT_FOUND" }, { status: 404 });
-    deployment = deploymentData;
+    deployment = (await query<{ id: string; organization_id: string; external_deployment_id: string; status: string }>(
+      `select id, organization_id, external_deployment_id, status
+         from runtime_deployments
+        where agent_id = $1 and agent_version = $2 and provider = 'dograh' and status = $3
+        order by created_at desc limit 1`,
+      [id, agent.current_version, desiredStatus],
+    )).rows[0] ?? null;
+    if (!deployment) return NextResponse.json({ error: "DEPLOYMENT_NOT_FOUND" }, { status: 404 });
     workflowId = deploymentWorkflowId(deployment.external_deployment_id);
 
     const runtime = await resolveDograhConnection(deployment.organization_id);
     voiceAdapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
     telephonyAdapter = new DograhTelephonyAdapter(runtime.baseUrl, runtime.apiKey);
 
-    const { data: routesData, error: routesError } = await supabase
-      .from("phone_number_routes")
-      .select("id,telephony_connection_id,external_phone_number_id,external_workflow_id,label,is_active")
-      .eq("organization_id", deployment.organization_id)
-      .eq("agent_id", id);
-    if (routesError) throw routesError;
-    const routes = (routesData ?? []) as RouteRow[];
+    const routes = (await query<RouteRow>(
+      `select id, telephony_connection_id, external_phone_number_id, external_workflow_id, label, is_active
+         from phone_number_routes where organization_id = $1 and agent_id = $2`,
+      [deployment.organization_id, id],
+    )).rows;
     const connectionIds = [...new Set(routes.map((route) => route.telephony_connection_id))];
-    let connections: ConnectionRow[] = [];
-    if (connectionIds.length) {
-      const { data: connectionData, error: connectionError } = await supabase
-        .from("telephony_connections")
-        .select("id,external_config_id,status")
-        .eq("organization_id", deployment.organization_id)
-        .in("id", connectionIds);
-      if (connectionError) throw connectionError;
-      connections = (connectionData ?? []) as ConnectionRow[];
-    }
+    const connections = connectionIds.length
+      ? (await query<ConnectionRow>(
+          `select id, external_config_id, status from telephony_connections where organization_id = $1 and id = any($2::uuid[])`,
+          [deployment.organization_id, connectionIds],
+        )).rows
+      : [];
     const connectionById = new Map(connections.map((connection) => [connection.id, connection]));
 
-    if (action === "pause") {
-      await voiceAdapter.pause(deployment.external_deployment_id);
-    } else {
-      await voiceAdapter.resume(deployment.external_deployment_id);
-    }
+    if (action === "pause") await voiceAdapter.pause(deployment.external_deployment_id);
+    else await voiceAdapter.resume(deployment.external_deployment_id);
     runtimeChanged = true;
 
     const nextActive = action === "resume";
@@ -150,75 +119,44 @@ export async function POST(
         label: route.label,
         isActive: nextActive,
       });
-      if (updated.provider_sync?.ok === false) {
-        throw new Error(`PHONE_ROUTE_PROVIDER_SYNC_FAILED:${route.id}:${updated.provider_sync.message ?? "unknown"}`);
-      }
-      const { error: routeUpdateError } = await supabase
-        .from("phone_number_routes")
-        .update({
-          is_active: nextActive,
-          external_workflow_id: String(workflowId),
-          provider_sync_ok: updated.provider_sync?.ok ?? null,
-          provider_sync_message: updated.provider_sync?.message ?? null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", route.id);
-      if (routeUpdateError) throw routeUpdateError;
+      if (updated.provider_sync?.ok === false) throw new Error(`PHONE_ROUTE_PROVIDER_SYNC_FAILED:${route.id}:${updated.provider_sync.message ?? "unknown"}`);
+      await query(
+        `update phone_number_routes set is_active = $1, external_workflow_id = $2, provider_sync_ok = $3, provider_sync_message = $4, updated_at = now() where id = $5`,
+        [nextActive, String(workflowId), updated.provider_sync?.ok ?? null, updated.provider_sync?.message ?? null, route.id],
+      );
       changedRoutes.push({ route, configurationId: connection.external_config_id });
     }
 
     const nextStatus = action === "pause" ? "paused" : "ready";
     const nextAgentStatus = action === "pause" ? "paused" : "published";
-    const { error: deploymentUpdateError } = await supabase
-      .from("runtime_deployments")
-      .update({ status: nextStatus, updated_at: new Date().toISOString(), last_error: null })
-      .eq("id", deployment.id);
-    if (deploymentUpdateError) throw deploymentUpdateError;
-
-    const { error: agentUpdateError } = await supabase
-      .from("agents")
-      .update({ status: nextAgentStatus })
-      .eq("id", id)
-      .eq("current_version", agent.current_version);
-    if (agentUpdateError) throw agentUpdateError;
+    await query(`update runtime_deployments set status = $1, updated_at = now(), last_error = null where id = $2`, [nextStatus, deployment.id]);
+    await query(`update agents set status = $1 where id = $2 and current_version = $3`, [nextAgentStatus, id, agent.current_version]);
 
     runtimeChanged = false;
     changedRoutes = [];
     return NextResponse.json({ status: nextStatus, phoneRoutesActive: nextActive });
   } catch (error) {
-    if (changedRoutes.length && telephonyAdapter && supabase && workflowId !== null) {
-      await restoreRoutes({
-        adapter: telephonyAdapter,
-        supabase,
-        changed: changedRoutes,
-        workflowId,
-        active: action === "pause",
-      });
+    if (changedRoutes.length && telephonyAdapter && workflowId !== null) {
+      await restoreRoutes({ adapter: telephonyAdapter, changed: changedRoutes, workflowId, active: action === "pause" });
     }
     if (runtimeChanged && voiceAdapter && deployment) {
       try {
         if (action === "pause") await voiceAdapter.resume(deployment.external_deployment_id);
         else await voiceAdapter.pause(deployment.external_deployment_id);
       } catch {
-        if (supabase) {
-          await supabase
-            .from("runtime_deployments")
-            .update({
-              status: "failed",
-              last_error: "PAUSE_RESUME_ROLLBACK_FAILED",
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", deployment.id);
-        }
+        await query(
+          `update runtime_deployments set status = 'failed', last_error = 'PAUSE_RESUME_ROLLBACK_FAILED', updated_at = now() where id = $1`,
+          [deployment.id],
+        ).catch(() => undefined);
       }
     }
 
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-    const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED") || message === "SUPABASE_NOT_CONFIGURED"
+    const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED")
       ? 503
       : message === "AGENT_NOT_FOUND" || message === "DEPLOYMENT_NOT_FOUND"
         ? 404
-        : 500;
+        : organizationAuthErrorStatus(message);
     return NextResponse.json({ error: message }, { status });
   }
 }
