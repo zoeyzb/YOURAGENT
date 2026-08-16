@@ -1,7 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { getMigrations } from "better-auth/db/migration";
-import { auth, hasAuthConfiguration } from "@/lib/auth";
+import { hasAuthConfiguration } from "@/lib/auth";
 import { APP_SCHEMA_SQL } from "@/lib/app-schema";
 import { getDbPool, hasDatabaseUrl } from "@/lib/db";
 
@@ -24,8 +23,6 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { runMigrations } = await getMigrations(auth.options);
-    await runMigrations();
     await getDbPool().query(APP_SCHEMA_SQL);
 
     const checks = await Promise.all([
@@ -36,7 +33,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      authSchema: "neon_auth",
+      authSchema: "managed_by_neon",
       appSchema: "ready",
       probes: checks.length,
     });
