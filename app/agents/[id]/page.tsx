@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { auth, hasAuthConfiguration } from "@/lib/auth";
+import { hasDatabaseUrl, query } from "@/lib/db";
 import { hasDograhEnv } from "@/lib/env";
 import { DeployButton } from "./DeployButton";
 import { EditAgentForm } from "./EditAgentForm";
@@ -9,13 +11,13 @@ import { TestAgentButton } from "./TestAgentButton";
 
 type WorkflowNodeView = { id: string; label: string; type: string; config?: Record<string, unknown> };
 type SkillView = { id: string; name: string; category: string; version: number };
-
 type AgentConfigView = {
   goal?: { objective?: string; direction?: "inbound" | "outbound" | "both"; industry?: string };
   voiceProfile?: string;
   workflow?: { nodes?: WorkflowNodeView[] };
   skills?: SkillView[];
 };
+type DeploymentRow = { id: string; agent_version: number; provider: string; external_deployment_id: string; status: string; created_at: string; last_error: string | null };
 
 export const dynamic = "force-dynamic";
 
@@ -25,63 +27,59 @@ function text(value: unknown) {
 
 export default async function AgentPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const { data: auth } = await supabase.auth.getUser();
-  if (!auth.user) {
+  if (!hasAuthConfiguration() || !hasDatabaseUrl()) {
+    return <main><div className="shell section"><p>Postgres backend setup is required.</p><Link className="btn" href="/api/health">Health</Link></div></main>;
+  }
+
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session?.user) {
     return <main><div className="shell section"><p>Please sign in.</p><Link className="btn btn-primary" href="/login">Sign in</Link></div></main>;
   }
 
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id,organization_id,name,status,current_version,created_at")
-    .eq("id", id)
-    .maybeSingle();
+  const agentResult = await query<{
+    id: string; organization_id: string; name: string; status: string; current_version: number; created_at: string;
+  }>(
+    `select a.id, a.organization_id, a.name, a.status, a.current_version, a.created_at
+       from agents a
+       join organization_members m on m.organization_id = a.organization_id
+      where a.id = $1 and m.user_id = $2
+      limit 1`,
+    [id, session.user.id],
+  );
+  const agent = agentResult.rows[0];
   if (!agent) notFound();
 
-  const [
-    { data: version },
-    { data: currentDeployment },
-    { data: liveDeployment },
-    { data: runtimeConnection },
-    { data: versions },
-  ] = await Promise.all([
-    supabase
-      .from("agent_versions")
-      .select("version,status,config,config_hash,created_at")
-      .eq("agent_id", id)
-      .eq("version", agent.current_version)
-      .maybeSingle(),
-    supabase
-      .from("runtime_deployments")
-      .select("id,agent_version,provider,external_deployment_id,status,created_at,last_error")
-      .eq("agent_id", id)
-      .eq("agent_version", agent.current_version)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from("runtime_deployments")
-      .select("id,agent_version,provider,external_deployment_id,status,created_at,last_error")
-      .eq("agent_id", id)
-      .eq("status", "ready")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from("runtime_connections")
-      .select("provider,status,external_organization_id")
-      .eq("organization_id", agent.organization_id)
-      .eq("provider", "dograh")
-      .eq("status", "active")
-      .maybeSingle(),
-    supabase
-      .from("agent_versions")
-      .select("version,status,config_hash,created_at")
-      .eq("agent_id", id)
-      .order("version", { ascending: false })
-      .limit(10),
+  const [versionResult, currentDeploymentResult, liveDeploymentResult, runtimeResult, versionsResult] = await Promise.all([
+    query<{ version: number; status: string; config: unknown; config_hash: string; created_at: string }>(
+      `select version, status, config, config_hash, created_at from agent_versions where agent_id = $1 and version = $2 limit 1`,
+      [id, agent.current_version],
+    ),
+    query<DeploymentRow>(
+      `select id, agent_version, provider, external_deployment_id, status, created_at, last_error
+         from runtime_deployments where agent_id = $1 and agent_version = $2 order by created_at desc limit 1`,
+      [id, agent.current_version],
+    ),
+    query<DeploymentRow>(
+      `select id, agent_version, provider, external_deployment_id, status, created_at, last_error
+         from runtime_deployments where agent_id = $1 and status = 'ready' order by created_at desc limit 1`,
+      [id],
+    ),
+    query<{ provider: string; status: string; external_organization_id: string | null }>(
+      `select provider, status, external_organization_id from runtime_connections
+        where organization_id = $1 and provider = 'dograh' and status = 'active' limit 1`,
+      [agent.organization_id],
+    ),
+    query<{ version: number; status: string; config_hash: string; created_at: string }>(
+      `select version, status, config_hash, created_at from agent_versions where agent_id = $1 order by version desc limit 10`,
+      [id],
+    ),
   ]);
 
+  const version = versionResult.rows[0];
+  const currentDeployment = currentDeploymentResult.rows[0];
+  const liveDeployment = liveDeploymentResult.rows[0];
+  const runtimeConnection = runtimeResult.rows[0];
+  const versions = versionsResult.rows;
   const config = (version?.config ?? {}) as AgentConfigView;
   const nodes = config.workflow?.nodes ?? [];
   const skills = config.skills ?? [];
@@ -91,104 +89,22 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const runtimeConfigured = Boolean(runtimeConnection) || devFallbackEnabled;
   const runtimeLabel = runtimeConnection
     ? `Tenant Dograh${runtimeConnection.external_organization_id ? ` · ${runtimeConnection.external_organization_id}` : ""}`
-    : devFallbackEnabled
-      ? "Development Dograh fallback"
-      : "No tenant runtime";
+    : devFallbackEnabled ? "Development Dograh fallback" : "No tenant runtime";
 
   const currentIsLive = currentDeployment?.status === "ready";
   const currentIsPaused = currentDeployment?.status === "paused";
   const olderVersionLive = liveDeployment && liveDeployment.agent_version !== agent.current_version;
 
   return <main><div className="shell section">
-    <div className="dash-top">
-      <Link className="brand" href="/dashboard"><span className="brand-dot" />YOURAGENT</Link>
-      <span className="status">{String(agent.status).toUpperCase()}</span>
-    </div>
+    <div className="dash-top"><Link className="brand" href="/dashboard"><span className="brand-dot" />YOURAGENT</Link><span className="status">{agent.status.toUpperCase()}</span></div>
     <div className="agent-detail-grid">
-      <section className="card builder-card">
-        <span className="eyebrow">AGENT</span>
-        <h1 style={{fontSize:58}}>{agent.name}</h1>
-        <p className="lede">{config.goal?.objective}</p>
-        <div className="metric-grid">
-          <div className="metric"><span>Current version</span><strong>v{agent.current_version}</strong></div>
-          <div className="metric"><span>Direction</span><strong>{config.goal?.direction ?? "—"}</strong></div>
-          <div className="metric"><span>Industry</span><strong>{config.goal?.industry ?? "—"}</strong></div>
-          <div className="metric"><span>Voice</span><strong>{config.voiceProfile ?? "—"}</strong></div>
-        </div>
-      </section>
-
-      <section className="card builder-card">
-        <span className="eyebrow">WORKFLOW</span>
-        <h2>{nodes.length} nodes</h2>
-        {nodes.map((node, index) => <div className="agent-row" key={node.id}><div><strong>{index + 1}. {node.label}</strong><div style={{color:'#9ca3af',marginTop:4}}>{node.type}</div></div></div>)}
-      </section>
-
-      <section className="card builder-card">
-        <span className="eyebrow">SKILLS</span>
-        <h2>{skills.length} attached</h2>
-        {skills.map((skill) => <div className="agent-row" key={skill.id}><div><strong>{skill.name}</strong><div style={{color:'#9ca3af',marginTop:4}}>{skill.category} · v{skill.version}</div></div></div>)}
-      </section>
-
-      <section className="card builder-card">
-        <span className="eyebrow">VOICE RUNTIME</span>
-        <h2>{runtimeLabel}</h2>
-        <TestAgentButton agentId={id} disabled={!runtimeConfigured} />
-        {!runtimeConfigured ? <p style={{marginTop:12}}>Connect this organization to its own Dograh runtime before testing or deploying.</p> : null}
-      </section>
-
-      <section className="card builder-card">
-        <span className="eyebrow">DEPLOYMENT</span>
-        {currentIsLive ? <>
-          <h2>v{agent.current_version} is LIVE on {currentDeployment.provider}</h2>
-          <p>Runtime ID: <code>{currentDeployment.external_deployment_id}</code></p>
-          <p>Created {new Date(currentDeployment.created_at).toLocaleString()}</p>
-          <RuntimeStatusButton agentId={id} action="pause" />
-        </> : currentIsPaused ? <>
-          <h2>v{agent.current_version} is PAUSED</h2>
-          <p>Runtime ID: <code>{currentDeployment.external_deployment_id}</code></p>
-          <RuntimeStatusButton agentId={id} action="resume" />
-        </> : <>
-          <h2>v{agent.current_version} is not live yet.</h2>
-          {olderVersionLive ? <p>v{liveDeployment.agent_version} stays live until this version is deployed successfully. Cutover is transactional.</p> : <p>No older live deployment exists.</p>}
-          {currentDeployment?.status === "failed" && currentDeployment.last_error ? <p style={{color:'#fca5a5'}}>Last deployment failed: {currentDeployment.last_error}</p> : null}
-          <DeployButton agentId={id} disabled={!runtimeConfigured} />
-          {!runtimeConfigured ? <p style={{marginTop:12}}>Tenant Dograh credentials are not configured, so deployment is safely disabled.</p> : null}
-        </>}
-        <code className="hash">{version?.config_hash ?? "no version hash"}</code>
-      </section>
-
-      <section className="card builder-card" style={{ gridColumn: "1 / -1" }}>
-        <span className="eyebrow">EDIT · CREATES A NEW IMMUTABLE VERSION</span>
-        <h2>Change the agent without rewriting history.</h2>
-        <EditAgentForm
-          agentId={id}
-          name={agent.name}
-          industry={config.goal?.industry ?? "General"}
-          objective={config.goal?.objective ?? "Help callers and complete the requested business task."}
-          direction={config.goal?.direction ?? "inbound"}
-          voiceProfile={config.voiceProfile ?? "warm-professional"}
-          httpAction={actionNode ? {
-            label: actionNode.label,
-            url: text(actionNode.config?.url),
-            method: (["GET", "POST", "PUT", "PATCH", "DELETE"].includes(text(actionNode.config?.method)) ? text(actionNode.config?.method) : "POST") as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
-            credentialUuid: text(actionNode.config?.credentialUuid) || undefined,
-          } : null}
-          transfer={transferNode ? {
-            label: transferNode.label,
-            destination: text(transferNode.config?.destination),
-            message: text(transferNode.config?.message) || undefined,
-          } : null}
-        />
-      </section>
-
-      <section className="card builder-card" style={{ gridColumn: "1 / -1" }}>
-        <span className="eyebrow">VERSION HISTORY</span>
-        <h2>{versions?.length ?? 0} recent versions</h2>
-        {(versions ?? []).map((item) => <div className="agent-row" key={item.version}>
-          <div><strong>v{item.version} · {String(item.status).toUpperCase()}</strong><div style={{color:'#9ca3af',marginTop:4}}>{new Date(item.created_at).toLocaleString()}</div></div>
-          <code className="hash">{String(item.config_hash).slice(0, 16)}…</code>
-        </div>)}
-      </section>
+      <section className="card builder-card"><span className="eyebrow">AGENT</span><h1 style={{fontSize:58}}>{agent.name}</h1><p className="lede">{config.goal?.objective}</p><div className="metric-grid"><div className="metric"><span>Current version</span><strong>v{agent.current_version}</strong></div><div className="metric"><span>Direction</span><strong>{config.goal?.direction ?? "—"}</strong></div><div className="metric"><span>Industry</span><strong>{config.goal?.industry ?? "—"}</strong></div><div className="metric"><span>Voice</span><strong>{config.voiceProfile ?? "—"}</strong></div></div></section>
+      <section className="card builder-card"><span className="eyebrow">WORKFLOW</span><h2>{nodes.length} nodes</h2>{nodes.map((node,index)=><div className="agent-row" key={node.id}><div><strong>{index+1}. {node.label}</strong><div style={{color:'#9ca3af',marginTop:4}}>{node.type}</div></div></div>)}</section>
+      <section className="card builder-card"><span className="eyebrow">SKILLS</span><h2>{skills.length} attached</h2>{skills.map((skill)=><div className="agent-row" key={skill.id}><div><strong>{skill.name}</strong><div style={{color:'#9ca3af',marginTop:4}}>{skill.category} · v{skill.version}</div></div></div>)}</section>
+      <section className="card builder-card"><span className="eyebrow">VOICE RUNTIME</span><h2>{runtimeLabel}</h2><TestAgentButton agentId={id} disabled={!runtimeConfigured}/>{!runtimeConfigured?<p style={{marginTop:12}}>Connect this organization to Dograh before testing or deploying.</p>:null}</section>
+      <section className="card builder-card"><span className="eyebrow">DEPLOYMENT</span>{currentIsLive?<><h2>v{agent.current_version} is LIVE on {currentDeployment.provider}</h2><p>Runtime ID: <code>{currentDeployment.external_deployment_id}</code></p><RuntimeStatusButton agentId={id} action="pause"/></>:currentIsPaused?<><h2>v{agent.current_version} is PAUSED</h2><p>Runtime ID: <code>{currentDeployment.external_deployment_id}</code></p><RuntimeStatusButton agentId={id} action="resume"/></>:<><h2>v{agent.current_version} is not live yet.</h2>{olderVersionLive?<p>v{liveDeployment.agent_version} stays live until this version deploys successfully.</p>:<p>No older live deployment exists.</p>}{currentDeployment?.status==="failed"&&currentDeployment.last_error?<p style={{color:'#fca5a5'}}>Last deployment failed: {currentDeployment.last_error}</p>:null}<DeployButton agentId={id} disabled={!runtimeConfigured}/></>}<code className="hash">{version?.config_hash ?? "no version hash"}</code></section>
+      <section className="card builder-card" style={{gridColumn:"1 / -1"}}><span className="eyebrow">EDIT · CREATES A NEW IMMUTABLE VERSION</span><h2>Change the agent without rewriting history.</h2><EditAgentForm agentId={id} name={agent.name} industry={config.goal?.industry??"General"} objective={config.goal?.objective??"Help callers and complete the requested business task."} direction={config.goal?.direction??"inbound"} voiceProfile={config.voiceProfile??"warm-professional"} httpAction={actionNode?{label:actionNode.label,url:text(actionNode.config?.url),method:(["GET","POST","PUT","PATCH","DELETE"].includes(text(actionNode.config?.method))?text(actionNode.config?.method):"POST") as "GET"|"POST"|"PUT"|"PATCH"|"DELETE",credentialUuid:text(actionNode.config?.credentialUuid)||undefined}:null} transfer={transferNode?{label:transferNode.label,destination:text(transferNode.config?.destination),message:text(transferNode.config?.message)||undefined}:null}/></section>
+      <section className="card builder-card" style={{gridColumn:"1 / -1"}}><span className="eyebrow">VERSION HISTORY</span><h2>{versions.length} recent versions</h2>{versions.map((item)=><div className="agent-row" key={item.version}><div><strong>v{item.version} · {item.status.toUpperCase()}</strong><div style={{color:'#9ca3af',marginTop:4}}>{new Date(item.created_at).toLocaleString()}</div></div><code className="hash">{item.config_hash.slice(0,16)}…</code></div>)}</section>
     </div>
   </div></main>;
 }
