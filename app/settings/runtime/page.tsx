@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { auth, hasAuthConfiguration } from "@/lib/auth";
 import { hasDatabaseUrl, query } from "@/lib/db";
 import { hasRuntimeSecretEncryptionKey } from "@/lib/secrets";
+import { CleanupTestSessionsButton } from "./CleanupTestSessionsButton";
 import { ConnectDograhForm } from "./ConnectDograhForm";
 
 export const dynamic = "force-dynamic";
@@ -58,6 +59,7 @@ export default async function RuntimeSettingsPage() {
           <p>{connection ? `Dograh ${connection.status.toUpperCase()} · ${connection.base_url}` : "No Dograh runtime connected."}</p>
           {connection?.updated_at ? <p style={{ color: "#9ca3af" }}>Last updated {new Date(connection.updated_at).toLocaleString()}</p> : null}
           <ConnectDograhForm organizationId={organization.id} initialBaseUrl={connection?.base_url ?? "https://api.dograh.com"} connected={Boolean(connection)} encryptionReady={encryptionReady} />
+          {connection?.status === "active" && encryptionReady ? <CleanupTestSessionsButton organizationId={organization.id} /> : null}
         </section>;
       })}
       {!organizations.length ? <section className="card builder-card"><h2>No admin organizations.</h2><p>Create your first agent from the dashboard; YOURAGENT will create your organization automatically.</p></section> : null}
