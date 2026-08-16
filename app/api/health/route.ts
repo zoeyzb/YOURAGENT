@@ -10,7 +10,7 @@ async function probeDatabase() {
 
   try {
     await query("select 1 from organizations limit 1");
-    await query('select 1 from "user" limit 1');
+    await query('select 1 from neon_auth."user" limit 1');
     return { state: "ready" as ServiceState };
   } catch (error) {
     return {
@@ -59,7 +59,7 @@ export async function GET() {
     services: {
       web: { state: "ready" as ServiceState },
       database,
-      auth: { state: authState, provider: "better-auth" },
+      auth: { state: authState, provider: "better-auth", schema: "neon_auth" },
       tenantVoiceRuntime: {
         state: "tenant_scoped" as ServiceState,
         note: "Dograh credentials are organization-scoped and stored encrypted in Postgres; the global runtime is development-only.",
