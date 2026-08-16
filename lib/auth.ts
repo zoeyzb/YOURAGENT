@@ -17,10 +17,19 @@ export function hasAuthConfiguration() {
   return Boolean(process.env.DATABASE_URL);
 }
 
-export const auth = createNeonAuth({
+const managedAuth = createNeonAuth({
   baseUrl: process.env.NEON_AUTH_BASE_URL ?? DEFAULT_NEON_AUTH_BASE_URL,
   cookies: {
     secret: resolveCookieSecret(),
   },
   logLevel: process.env.NODE_ENV === "production" ? "warn" : "info",
+});
+
+export const auth = Object.assign(managedAuth, {
+  api: {
+    async getSession(_options?: { headers?: Headers }) {
+      const { data } = await managedAuth.getSession();
+      return data;
+    },
+  },
 });
