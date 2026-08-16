@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildAgentConfig } from "@/lib/agent-builder";
 import { DograhTelephonyAdapter } from "@/lib/adapters/dograh-telephony";
+import type { AgentConfig } from "@/lib/domain";
 
 const agentId = "00000000-0000-4000-8000-000000000001";
 const organizationId = "00000000-0000-4000-8000-000000000002";
@@ -42,6 +43,103 @@ describe("immutable agent configuration building", () => {
     ]);
     expect(config.transferNumber).toBe("+13125551234");
     expect(config.complianceProfile).toBe("us-outbound-default-deny");
+  });
+
+  it("preserves a custom workflow graph when ordinary settings change", () => {
+    const previous: AgentConfig = {
+      id: agentId,
+      organizationId,
+      name: "Jessica",
+      goal: { objective: "Old objective", direction: "inbound", industry: "HVAC" },
+      status: "draft",
+      version: 4,
+      voiceProfile: "warm-professional",
+      llmProfile: "balanced-reasoning",
+      sttProfile: "fast-english",
+      skills: [],
+      workflow: {
+        nodes: [
+          { id: "start", type: "say", label: "Custom greeting", config: { prompt: "Welcome back." } },
+          { id: "discover", type: "ask", label: "Custom discovery", config: { objective: "Old objective", prompt: "What happened?" } },
+          { id: "route", type: "decision", label: "Urgency route", config: { rubric: "urgent-vs-normal" } },
+          { id: "urgent", type: "say", label: "Urgent response", config: { prompt: "We can help now." } },
+          { id: "normal", type: "say", label: "Normal response", config: { prompt: "Let's schedule." } },
+          { id: "finish", type: "end", label: "Custom close", config: {} },
+        ],
+        edges: [
+          { from: "start", to: "discover" },
+          { from: "discover", to: "route" },
+          { from: "route", to: "urgent", condition: "urgent" },
+          { from: "route", to: "normal", condition: "normal" },
+          { from: "urgent", to: "finish" },
+          { from: "normal", to: "finish" },
+        ],
+      },
+      tools: [],
+      knowledgeBaseIds: [],
+      complianceProfile: "inbound-standard",
+      createdAt: "2026-08-16T00:00:00.000Z",
+    };
+
+    const next = buildAgentConfig({
+      agentId,
+      organizationId,
+      version: 5,
+      previous,
+      payload: {
+        name: "Jessica Updated",
+        industry: "HVAC",
+        objective: "Identify the issue and route the caller without losing custom logic.",
+        direction: "inbound",
+        voiceProfile: "calm-professional",
+      },
+    });
+
+    expect(next.workflow.nodes.map((node) => node.id)).toEqual(previous.workflow.nodes.map((node) => node.id));
+    expect(next.workflow.edges).toEqual(previous.workflow.edges);
+    expect(next.workflow.nodes.find((node) => node.id === "route")?.config).toEqual({ rubric: "urgent-vs-normal" });
+    expect(next.workflow.nodes.find((node) => node.id === "discover")?.config).toEqual({
+      objective: "Identify the issue and route the caller without losing custom logic.",
+      prompt: "What happened?",
+    });
+    expect(next.name).toBe("Jessica Updated");
+    expect(next.voiceProfile).toBe("calm-professional");
+  });
+
+  it("removes only the simple managed action node when the settings action is cleared", () => {
+    const previous = buildAgentConfig({
+      agentId,
+      organizationId,
+      version: 1,
+      payload: {
+        name: "Jessica",
+        industry: "HVAC",
+        objective: "Qualify callers and book the right appointment quickly.",
+        direction: "inbound",
+        voiceProfile: "warm-professional",
+        httpAction: { label: "Book", method: "POST", url: "https://calendar.example/book" },
+      },
+    });
+
+    const next = buildAgentConfig({
+      agentId,
+      organizationId,
+      version: 2,
+      previous,
+      payload: {
+        name: "Jessica",
+        industry: "HVAC",
+        objective: "Qualify callers and book the right appointment quickly.",
+        direction: "inbound",
+        voiceProfile: "warm-professional",
+      },
+    });
+
+    expect(next.workflow.nodes.map((node) => node.id)).toEqual(["start", "discover", "finish"]);
+    expect(next.workflow.edges).toEqual([
+      { from: "start", to: "discover" },
+      { from: "discover", to: "finish" },
+    ]);
   });
 });
 
