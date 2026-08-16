@@ -23,6 +23,13 @@ function promptText(node: WorkflowNode) {
   return typeof value === "string" ? value : "";
 }
 
+function serializedWorkflow(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
+  return JSON.stringify({
+    nodes: nodes.map((node) => ({ id: node.id, type: node.type, label: node.label, config: node.config })),
+    edges: edges.map((edge) => ({ from: edge.from, to: edge.to, ...(edge.condition ? { condition: edge.condition } : {}) })),
+  });
+}
+
 export function WorkflowEditor({
   agentId,
   initialNodes,
@@ -35,24 +42,38 @@ export function WorkflowEditor({
   const router = useRouter();
   const [nodes, setNodes] = useState<WorkflowNode[]>(initialNodes);
   const [edges, setEdges] = useState<WorkflowEdge[]>(initialEdges);
+  const [baseline, setBaseline] = useState(() => serializedWorkflow(initialNodes, initialEdges));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  const currentSerialized = useMemo(() => serializedWorkflow(nodes, edges), [nodes, edges]);
+  const dirty = currentSerialized !== baseline;
+
   const structure = useMemo(() => {
+    const ids = new Set(nodes.map((node) => node.id));
     const incoming = new Map(nodes.map((node) => [node.id, 0]));
-    for (const edge of edges) incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+    let brokenEdges = 0;
+    for (const edge of edges) {
+      if (!ids.has(edge.from) || !ids.has(edge.to) || edge.from === edge.to) brokenEdges += 1;
+      if (ids.has(edge.to)) incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+    }
     return {
       entries: nodes.filter((node) => (incoming.get(node.id) ?? 0) === 0).length,
       ends: nodes.filter((node) => node.type === "end").length,
+      brokenEdges,
     };
   }, [nodes, edges]);
 
+  const structurallyReady = structure.entries === 1 && structure.ends >= 1 && structure.brokenEdges === 0;
+
   function updateNode(index: number, patch: Partial<WorkflowNode>) {
+    setMessage("");
     setNodes((current) => current.map((node, nodeIndex) => nodeIndex === index ? { ...node, ...patch } : node));
   }
 
   function updatePrompt(index: number, value: string) {
+    setMessage("");
     setNodes((current) => current.map((node, nodeIndex) => {
       if (nodeIndex !== index) return node;
       const config = { ...node.config };
@@ -68,25 +89,38 @@ export function WorkflowEditor({
   }
 
   function addNode() {
+    setMessage("");
     const id = `step-${crypto.randomUUID().slice(0, 8)}`;
     setNodes((current) => [...current, { id, type: "ask", label: "New conversation step", config: {} }]);
   }
 
   function removeNode(id: string) {
+    setMessage("");
     setNodes((current) => current.filter((node) => node.id !== id));
     setEdges((current) => current.filter((edge) => edge.from !== id && edge.to !== id));
   }
 
   function updateEdge(index: number, patch: Partial<WorkflowEdge>) {
+    setMessage("");
     setEdges((current) => current.map((edge, edgeIndex) => edgeIndex === index ? { ...edge, ...patch } : edge));
   }
 
   function addEdge() {
     if (nodes.length < 2) return;
+    setMessage("");
     setEdges((current) => [...current, { from: nodes[0].id, to: nodes[nodes.length - 1].id, condition: "" }]);
   }
 
   async function save() {
+    if (!dirty) {
+      setError("Change at least one workflow field before creating a new version.");
+      return;
+    }
+    if (!structurallyReady) {
+      setError("Fix the workflow structure first: it needs exactly one entry, at least one end, and valid edges.");
+      return;
+    }
+
     setBusy(true);
     setMessage("");
     setError("");
@@ -102,12 +136,15 @@ export function WorkflowEditor({
     if (!response.ok) {
       if (body.error === "INVALID_WORKFLOW" && Array.isArray(body.issues)) {
         setError(body.issues.map((issue: { message?: string }) => issue.message).filter(Boolean).join(" · ") || "Invalid workflow");
+      } else if (body.error === "WORKFLOW_UNCHANGED") {
+        setError("No workflow change was detected, so no duplicate version was created.");
       } else {
         setError(body.error ?? "Could not save workflow version");
       }
       return;
     }
 
+    setBaseline(currentSerialized);
     setMessage(`Workflow saved as immutable v${body.agent?.current_version ?? "next"}.`);
     router.refresh();
   }
@@ -120,11 +157,12 @@ export function WorkflowEditor({
           <span className="status">{edges.length} EDGES</span>
           <span className="status" style={{ color: structure.entries === 1 ? "#bbf7d0" : "#fca5a5" }}>{structure.entries} ENTRY</span>
           <span className="status" style={{ color: structure.ends >= 1 ? "#bbf7d0" : "#fca5a5" }}>{structure.ends} END</span>
+          <span className="status" style={{ color: dirty ? "#fde68a" : "#9ca3af" }}>{dirty ? "UNSAVED CHANGES" : "SAVED"}</span>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn" type="button" onClick={addNode}>+ Node</button>
           <button className="btn" type="button" onClick={addEdge} disabled={nodes.length < 2}>+ Edge</button>
-          <button className="btn btn-primary" type="button" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save as new version"}</button>
+          <button className="btn btn-primary" type="button" onClick={save} disabled={busy || !dirty || !structurallyReady}>{busy ? "Saving…" : "Save as new version"}</button>
         </div>
       </div>
 
@@ -178,7 +216,7 @@ export function WorkflowEditor({
               {nodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
             </select>
             <input value={edge.condition ?? ""} onChange={(event) => updateEdge(index, { condition: event.target.value })} placeholder="Condition, e.g. caller is qualified" />
-            <button className="btn" type="button" onClick={() => setEdges((current) => current.filter((_, edgeIndex) => edgeIndex !== index))}>Remove</button>
+            <button className="btn" type="button" onClick={() => { setMessage(""); setEdges((current) => current.filter((_, edgeIndex) => edgeIndex !== index)); }}>Remove</button>
           </div>)}
           {!edges.length ? <p style={{ color: "#fde68a" }}>No edges. Add routing so the workflow has exactly one entry and a path to an end node.</p> : null}
         </div>
