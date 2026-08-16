@@ -6,6 +6,22 @@ import { hasDatabaseUrl, query, withTransaction } from "@/lib/db";
 import { AgentConfigSchema } from "@/lib/domain";
 import { WorkflowDraftSchema } from "@/lib/workflow-editor";
 
+function stableWorkflowJson(workflow: z.infer<typeof WorkflowDraftSchema>) {
+  return JSON.stringify({
+    nodes: workflow.nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      label: node.label,
+      config: node.config,
+    })),
+    edges: workflow.edges.map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      ...(edge.condition ? { condition: edge.condition } : {}),
+    })),
+  });
+}
+
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -49,6 +65,11 @@ export async function PATCH(
     }
 
     const current = AgentConfigSchema.parse(currentResult.rows[0].config);
+    const currentWorkflow = WorkflowDraftSchema.parse(current.workflow);
+    if (stableWorkflowJson(currentWorkflow) === stableWorkflowJson(workflow)) {
+      return NextResponse.json({ error: "WORKFLOW_UNCHANGED" }, { status: 409 });
+    }
+
     const nextVersion = agent.current_version + 1;
     const nextConfig = AgentConfigSchema.parse({
       ...current,
@@ -85,7 +106,9 @@ export async function PATCH(
       return NextResponse.json({ error: "INVALID_WORKFLOW", issues: error.issues }, { status: 400 });
     }
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-    if (message === "VERSION_CONFLICT") return NextResponse.json({ error: message }, { status: 409 });
+    if (message === "VERSION_CONFLICT" || message === "WORKFLOW_UNCHANGED") {
+      return NextResponse.json({ error: message }, { status: 409 });
+    }
     return NextResponse.json({ error: message }, { status: message === "DATABASE_NOT_CONFIGURED" ? 503 : 500 });
   }
 }
