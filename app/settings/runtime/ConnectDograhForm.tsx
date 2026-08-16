@@ -7,10 +7,12 @@ export function ConnectDograhForm({
   organizationId,
   initialBaseUrl = "https://api.dograh.com",
   connected = false,
+  encryptionReady = true,
 }: {
   organizationId: string;
   initialBaseUrl?: string;
   connected?: boolean;
+  encryptionReady?: boolean;
 }) {
   const router = useRouter();
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
@@ -21,6 +23,11 @@ export function ConnectDograhForm({
 
   async function connect(event: React.FormEvent) {
     event.preventDefault();
+    if (!encryptionReady) {
+      setError("Runtime secret encryption is not configured on the server yet. Dograh keys cannot be saved until it is enabled.");
+      return;
+    }
+
     setBusy(true);
     setMessage("");
     setError("");
@@ -49,9 +56,10 @@ export function ConnectDograhForm({
 
   return (
     <form onSubmit={connect} style={{ display: "grid", gap: 14, marginTop: 18 }}>
+      {!encryptionReady ? <p style={{ color: "#fca5a5" }}>Voice-runtime secret encryption must be configured before a Dograh key can be connected.</p> : null}
       <label>
         <span style={{ display: "block", marginBottom: 7, color: "#9ca3af" }}>Dograh API URL</span>
-        <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} required />
+        <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} required disabled={!encryptionReady} />
       </label>
       <label>
         <span style={{ display: "block", marginBottom: 7, color: "#9ca3af" }}>Dograh API key</span>
@@ -62,9 +70,10 @@ export function ConnectDograhForm({
           autoComplete="off"
           placeholder={connected ? "Paste a new key to rotate it" : "Paste organization-scoped API key"}
           required
+          disabled={!encryptionReady}
         />
       </label>
-      <button className="btn btn-primary" disabled={busy}>
+      <button className="btn btn-primary" disabled={busy || !encryptionReady}>
         {busy ? "Verifying…" : connected ? "Verify & rotate key" : "Verify & connect Dograh"}
       </button>
       {message ? <p style={{ color: "#bbf7d0" }}>{message}</p> : null}
