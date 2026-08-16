@@ -2,7 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { authClient } from "@/lib/auth-client";
 
 export default function LoginForm() {
   const router = useRouter();
@@ -15,18 +15,19 @@ export default function LoginForm() {
     setBusy(true);
     setError("");
     const form = new FormData(event.currentTarget);
-    const email = String(form.get("email"));
-    const password = String(form.get("password"));
+    const email = String(form.get("email") ?? "").trim();
+    const password = String(form.get("password") ?? "");
+
     try {
-      const supabase = createSupabaseBrowserClient();
       const result = mode === "login"
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
-      if (result.error) throw result.error;
-      if (mode === "signup" && !result.data.session) {
-        setError("Account created. Check your email to confirm it, then sign in.");
-        return;
-      }
+        ? await authClient.signIn.email({ email, password })
+        : await authClient.signUp.email({
+            email,
+            password,
+            name: email.split("@")[0] || "YOURAGENT user",
+          });
+
+      if (result.error) throw new Error(result.error.message || "Authentication failed.");
       router.push("/dashboard");
       router.refresh();
     } catch (err) {
