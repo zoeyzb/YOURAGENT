@@ -59,7 +59,7 @@ export async function GET() {
     services: {
       web: { state: "ready" as ServiceState },
       database,
-      auth: { state: authState, provider: "better-auth", schema: "neon_auth" },
+      auth: { state: authState, provider: "neon-managed-auth", schema: "neon_auth" },
       tenantVoiceRuntime: {
         state: "tenant_scoped" as ServiceState,
         note: "Dograh credentials are organization-scoped and stored encrypted in Postgres; the global runtime is development-only.",
