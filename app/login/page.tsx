@@ -16,13 +16,13 @@ export default function LoginPage() {
           <h1 style={{ fontSize: 52 }}>{configured ? "Operate real agents." : "Backend setup required."}</h1>
           {configured ? (
             <>
-              <p className="lede">Sign in or create your agency account. Authentication is handled by Better Auth and stored in the same Postgres backend as YOURAGENT.</p>
+              <p className="lede">Sign in or create your agency account. Authentication is handled by Neon Managed Auth and stored alongside the YOURAGENT Postgres backend.</p>
               <LoginForm />
             </>
           ) : (
             <>
-              <p className="lede">Authentication is disabled until a Postgres database is connected. YOURAGENT no longer requires a dedicated Supabase project.</p>
-              <p>Required production variables: <code>DATABASE_URL</code>, <code>BETTER_AUTH_SECRET</code>, and <code>BETTER_AUTH_URL</code>.</p>
+              <p className="lede">Authentication is disabled until the Neon Postgres database is connected.</p>
+              <p>Required production variable: <code>DATABASE_URL</code>. Managed Auth is already provisioned for this project.</p>
               <Link className="btn" href="/api/health">Open health check</Link>
             </>
           )}
