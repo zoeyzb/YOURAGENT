@@ -36,12 +36,14 @@ export function ConnectDograhForm({
     if (!response.ok) {
       setError(body.error === "DOGRAH_CREDENTIALS_REJECTED"
         ? "Dograh rejected that API key. Check the key and runtime URL."
-        : body.error ?? "Could not connect Dograh");
+        : body.error === "RUNTIME_SECRET_ENCRYPTION_KEY_NOT_CONFIGURED"
+          ? "Runtime secret encryption is not configured on the server yet. Dograh keys cannot be saved until it is enabled."
+          : body.error ?? "Could not connect Dograh");
       return;
     }
 
     setApiKey("");
-    setMessage("Dograh verified. The API key is stored in Supabase Vault, not in a readable app table.");
+    setMessage("Dograh verified. The API key is encrypted with AES-256-GCM before it is stored in Postgres and is never returned to the browser.");
     router.refresh();
   }
 
