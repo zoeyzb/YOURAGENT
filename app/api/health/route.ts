@@ -1,25 +1,16 @@
 import { NextResponse } from "next/server";
-import { hasDograhEnv, hasSupabaseAdminEnv, hasSupabaseEnv } from "@/lib/env";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { hasAuthConfiguration } from "@/lib/auth";
+import { hasDatabaseUrl, query } from "@/lib/db";
+import { hasDograhEnv } from "@/lib/env";
 
 type ServiceState = "ready" | "configured" | "missing_configuration" | "unreachable" | "tenant_scoped" | "disabled";
 
 async function probeDatabase() {
-  if (!hasSupabaseEnv() || !hasSupabaseAdminEnv()) {
-    return { state: "missing_configuration" as ServiceState };
-  }
+  if (!hasDatabaseUrl()) return { state: "missing_configuration" as ServiceState };
 
   try {
-    const admin = createSupabaseAdminClient();
-    const { error } = await admin
-      .from("organizations")
-      .select("id", { count: "exact", head: true });
-    if (error) {
-      return {
-        state: "unreachable" as ServiceState,
-        error: "DATABASE_SCHEMA_UNAVAILABLE",
-      };
-    }
+    await query("select 1 from organizations limit 1");
+    await query('select 1 from "user" limit 1');
     return { state: "ready" as ServiceState };
   } catch (error) {
     return {
@@ -40,16 +31,8 @@ async function probeDevelopmentDograhFallback() {
       cache: "no-store",
       signal: AbortSignal.timeout(5000),
     });
-    if (!response.ok) {
-      return { state: "unreachable" as ServiceState, statusCode: response.status };
-    }
-
-    const body = await response.json() as {
-      status?: string;
-      version?: string;
-      deployment_mode?: string;
-    };
-
+    if (!response.ok) return { state: "unreachable" as ServiceState, statusCode: response.status };
+    const body = await response.json() as { status?: string; version?: string; deployment_mode?: string };
     return {
       state: body.status === "ok" ? "ready" as ServiceState : "unreachable" as ServiceState,
       version: body.version ?? null,
@@ -68,18 +51,20 @@ export async function GET() {
     probeDatabase(),
     probeDevelopmentDograhFallback(),
   ]);
-  const databaseReady = database.state === "ready";
+  const authState: ServiceState = hasAuthConfiguration() ? "configured" : "missing_configuration";
+  const ready = database.state === "ready" && authState === "configured";
 
   return NextResponse.json({
-    ok: databaseReady,
+    ok: ready,
     services: {
       web: { state: "ready" as ServiceState },
       database,
+      auth: { state: authState, provider: "better-auth" },
       tenantVoiceRuntime: {
         state: "tenant_scoped" as ServiceState,
-        note: "Dograh credentials are resolved per organization from runtime_connections; a global runtime is not required in production.",
+        note: "Dograh credentials are organization-scoped and stored encrypted in Postgres; the global runtime is development-only.",
       },
       developmentRuntimeFallback,
     },
-  }, { status: databaseReady ? 200 : 503 });
+  }, { status: ready ? 200 : 503 });
 }
