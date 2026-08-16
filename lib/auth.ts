@@ -1,29 +1,26 @@
-import { betterAuth } from "better-auth";
-import { nextCookies } from "better-auth/next-js";
-import { Pool } from "pg";
+import { createHash } from "node:crypto";
+import { createNeonAuth } from "@neondatabase/auth/next/server";
 
-const buildOnlyDatabaseUrl = "postgresql://build:build@127.0.0.1:5432/build";
-const buildOnlySecret = "build-only-secret-that-is-never-valid-in-production";
+const DEFAULT_NEON_AUTH_BASE_URL = "https://ep-misty-credit-ayv01ntp.neonauth.c-5.us-east-2.aws.neon.tech/neondb/auth";
 
-export function hasAuthConfiguration() {
-  return Boolean(process.env.DATABASE_URL && process.env.BETTER_AUTH_SECRET);
+function resolveCookieSecret() {
+  if (process.env.NEON_AUTH_COOKIE_SECRET) return process.env.NEON_AUTH_COOKIE_SECRET;
+  if (process.env.DATABASE_URL) {
+    return createHash("sha256")
+      .update(`youragent-neon-auth-cookie:${process.env.DATABASE_URL}`)
+      .digest("base64");
+  }
+  return "build-only-neon-auth-cookie-secret-not-valid-in-production";
 }
 
-const authPool = new Pool({
-  connectionString: process.env.DATABASE_URL ?? buildOnlyDatabaseUrl,
-  ssl: process.env.DATABASE_URL && process.env.NODE_ENV === "production"
-    ? { rejectUnauthorized: false }
-    : undefined,
-  options: process.env.DATABASE_URL ? "-c search_path=neon_auth,public" : undefined,
-  max: 3,
-});
+export function hasAuthConfiguration() {
+  return Boolean(process.env.DATABASE_URL);
+}
 
-export const auth = betterAuth({
-  database: authPool,
-  secret: process.env.BETTER_AUTH_SECRET ?? buildOnlySecret,
-  baseURL: process.env.BETTER_AUTH_URL,
-  emailAndPassword: {
-    enabled: true,
+export const auth = createNeonAuth({
+  baseUrl: process.env.NEON_AUTH_BASE_URL ?? DEFAULT_NEON_AUTH_BASE_URL,
+  cookies: {
+    secret: resolveCookieSecret(),
   },
-  plugins: [nextCookies()],
+  logLevel: process.env.NODE_ENV === "production" ? "warn" : "info",
 });
