@@ -36,6 +36,17 @@ npm run build
 
 CI must pass the production dependency audit, TypeScript compilation, Vitest suite, and Next.js production build.
 
+## Readiness model
+
+`GET /api/health` intentionally separates core application readiness from voice-runtime readiness:
+
+- **Core ready:** web + Neon database + Neon Managed Auth are healthy. Signup, login, organization bootstrap, agent creation/versioning, and dashboard reads can operate.
+- **Runtime encryption ready:** `RUNTIME_SECRET_ENCRYPTION_KEY` is present. Organization-scoped Dograh credentials can be connected/decrypted safely.
+- **Tenant runtime ready:** the organization has an active Dograh connection. Test Agent and deploy become available.
+- **Telephony ready:** a tenant runtime exists and Twilio/phone routing is configured through Dograh.
+
+A missing runtime encryption key does not mark the core application dead; it disables voice-runtime credential setup until the key is configured.
+
 ## Local development
 
 Copy `.env.example`, provide a Neon/PostgreSQL connection string, then:
@@ -57,7 +68,7 @@ Neon manages the authentication schema separately; YOURAGENT does not create or 
 ## Required production environment
 
 - `DATABASE_URL` — Neon/PostgreSQL connection string
-- `RUNTIME_SECRET_ENCRYPTION_KEY` — required before storing Dograh/Twilio/provider credentials; exactly 32 random bytes encoded as base64 or 64 hex characters
+- `RUNTIME_SECRET_ENCRYPTION_KEY` — required before storing Dograh/provider credentials; exactly 32 random bytes encoded as base64 or 64 hex characters
 - `YOURAGENT_PUBLIC_URL` — canonical public URL used for runtime callbacks/embed origin restrictions
 
 Optional:
