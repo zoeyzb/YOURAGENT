@@ -30,13 +30,13 @@ export async function POST(request: Request) {
 
     const checks = await Promise.all([
       getDbPool().query("select 1 from organizations limit 1"),
-      getDbPool().query('select 1 from "user" limit 1'),
+      getDbPool().query('select 1 from neon_auth."user" limit 1'),
       getDbPool().query("select 1 from agents limit 1"),
     ]);
 
     return NextResponse.json({
       ok: true,
-      authSchema: "ready",
+      authSchema: "neon_auth",
       appSchema: "ready",
       probes: checks.length,
     });
