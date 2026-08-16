@@ -2,13 +2,14 @@ import Link from "next/link";
 import { headers } from "next/headers";
 import { auth, hasAuthConfiguration } from "@/lib/auth";
 import { hasDatabaseUrl, query } from "@/lib/db";
+import { hasRuntimeSecretEncryptionKey } from "@/lib/secrets";
 import { ConnectDograhForm } from "./ConnectDograhForm";
 
 export const dynamic = "force-dynamic";
 
 export default async function RuntimeSettingsPage() {
   if (!hasAuthConfiguration() || !hasDatabaseUrl()) {
-    return <main><div className="shell section"><p>Postgres backend setup is required.</p><Link className="btn" href="/api/health">Health</Link></div></main>;
+    return <main><div className="shell section"><p>Neon Postgres backend setup is required.</p><Link className="btn" href="/api/health">Health</Link></div></main>;
   }
 
   const session = await auth.api.getSession({ headers: await headers() });
@@ -16,6 +17,7 @@ export default async function RuntimeSettingsPage() {
     return <main><div className="shell section"><p>Please sign in.</p><Link className="btn btn-primary" href="/login">Sign in</Link></div></main>;
   }
 
+  const encryptionReady = hasRuntimeSecretEncryptionKey();
   const organizationsResult = await query<{ id: string; name: string; role: string }>(
     `select o.id, o.name, m.role
        from organizations o
@@ -44,6 +46,9 @@ export default async function RuntimeSettingsPage() {
     <span className="eyebrow">RUNTIME SETTINGS</span>
     <h1 style={{ fontSize: 58 }}>Connect each company to its own voice runtime.</h1>
     <p className="lede">Dograh API keys are verified server-side and encrypted with AES-256-GCM before they are stored in Postgres. The browser never receives the saved key.</p>
+    <p style={{ color: encryptionReady ? "#bbf7d0" : "#fca5a5" }}>
+      Runtime secret encryption: {encryptionReady ? "READY" : "NOT CONFIGURED"}
+    </p>
     <div className="agent-detail-grid" style={{ marginTop: 28 }}>
       {organizations.map((organization) => {
         const connection = connections.find((item) => item.organization_id === organization.id);
@@ -52,10 +57,10 @@ export default async function RuntimeSettingsPage() {
           <h2>{organization.name}</h2>
           <p>{connection ? `Dograh ${connection.status.toUpperCase()} · ${connection.base_url}` : "No Dograh runtime connected."}</p>
           {connection?.updated_at ? <p style={{ color: "#9ca3af" }}>Last updated {new Date(connection.updated_at).toLocaleString()}</p> : null}
-          <ConnectDograhForm organizationId={organization.id} initialBaseUrl={connection?.base_url ?? "https://api.dograh.com"} connected={Boolean(connection)} />
+          <ConnectDograhForm organizationId={organization.id} initialBaseUrl={connection?.base_url ?? "https://api.dograh.com"} connected={Boolean(connection)} encryptionReady={encryptionReady} />
         </section>;
       })}
-      {!organizations.length ? <section className="card builder-card"><h2>No admin organizations.</h2><p>You need owner/admin access to configure runtime credentials.</p></section> : null}
+      {!organizations.length ? <section className="card builder-card"><h2>No admin organizations.</h2><p>Create your first agent from the dashboard; YOURAGENT will create your organization automatically.</p></section> : null}
     </div>
   </div></main>;
 }
