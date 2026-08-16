@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { DograhTelephonyAdapter } from "@/lib/adapters/dograh-telephony";
+import { query } from "@/lib/db";
 import { organizationAuthErrorStatus, requireOrganizationAdmin } from "@/lib/org-auth";
 import { resolveDograhConnection } from "@/lib/runtime-connection";
 
@@ -19,7 +20,7 @@ export async function POST(request: Request) {
 
   try {
     const payload = ConnectTwilioRequest.parse(await request.json());
-    const { supabase } = await requireOrganizationAdmin(payload.organizationId);
+    await requireOrganizationAdmin(payload.organizationId, request.headers);
     const runtime = await resolveDograhConnection(payload.organizationId);
     adapter = new DograhTelephonyAdapter(runtime.baseUrl, runtime.apiKey);
 
@@ -32,43 +33,34 @@ export async function POST(request: Request) {
     });
     remoteConfigId = remote.id;
 
-    const { data: persisted, error: persistenceError } = await supabase
-      .from("telephony_connections")
-      .insert({
-        organization_id: payload.organizationId,
-        provider: "twilio",
-        external_config_id: String(remote.id),
-        name: remote.name,
-        status: remote.inactive ? "error" : "active",
-        is_default_outbound: remote.is_default_outbound,
-        metadata: {
-          runtime_source: runtime.source,
-          dograh_inactive: remote.inactive,
-        },
-      })
-      .select("id,provider,external_config_id,name,status,is_default_outbound,created_at")
-      .single();
-    if (persistenceError) throw persistenceError;
+    const result = await query<{
+      id: string; provider: string; external_config_id: string; name: string; status: string; is_default_outbound: boolean; created_at: string;
+    }>(
+      `insert into telephony_connections
+        (organization_id, provider, external_config_id, name, status, is_default_outbound, metadata)
+       values ($1, 'twilio', $2, $3, $4, $5, $6::jsonb)
+       returning id, provider, external_config_id, name, status, is_default_outbound, created_at`,
+      [
+        payload.organizationId,
+        String(remote.id),
+        remote.name,
+        remote.inactive ? "error" : "active",
+        remote.is_default_outbound,
+        JSON.stringify({ runtime_source: runtime.source, dograh_inactive: remote.inactive }),
+      ],
+    );
 
     remoteConfigId = null;
-    return NextResponse.json({ connection: persisted }, { status: 201 });
+    return NextResponse.json({ connection: result.rows[0] }, { status: 201 });
   } catch (error) {
     if (remoteConfigId && adapter) {
-      try {
-        await adapter.deleteConfiguration(remoteConfigId);
-      } catch {
-        // Preserve the original failure. Reconciliation can remove the orphan later.
-      }
+      try { await adapter.deleteConfiguration(remoteConfigId); } catch { /* preserve root failure */ }
     }
-
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "INVALID_TWILIO_CONFIGURATION", issues: error.issues }, { status: 400 });
     }
-
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-    const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED")
-      ? 503
-      : organizationAuthErrorStatus(message);
+    const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED") ? 503 : organizationAuthErrorStatus(message);
     return NextResponse.json({ error: message }, { status });
   }
 }
