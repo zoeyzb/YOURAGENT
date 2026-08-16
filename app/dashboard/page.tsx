@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export default async function DashboardPage() {
   if (!hasAuthConfiguration() || !hasDatabaseUrl()) {
     return (
-      <main><div className="shell section"><Link className="brand" href="/"><span className="brand-dot" />YOURAGENT</Link><div className="setup-card"><span className="eyebrow">BACKEND SETUP REQUIRED</span><h1 style={{fontSize:52}}>The app is deployed. Postgres is not connected yet.</h1><p className="lede">YOURAGENT now supports a provider-neutral Postgres backend with Better Auth. Connect a Neon <code>DATABASE_URL</code> plus the Better Auth secrets to activate login, agent creation, calls, runtime settings, and telephony.</p></div></div></main>
+      <main><div className="shell section"><Link className="brand" href="/"><span className="brand-dot" />YOURAGENT</Link><div className="setup-card"><span className="eyebrow">BACKEND SETUP REQUIRED</span><h1 style={{fontSize:52}}>The app is deployed. Postgres is not connected yet.</h1><p className="lede">YOURAGENT uses Neon Postgres with Neon Managed Auth. Connect the production <code>DATABASE_URL</code> to activate login, agent creation, calls, runtime settings, and telephony.</p></div></div></main>
     );
   }
 
