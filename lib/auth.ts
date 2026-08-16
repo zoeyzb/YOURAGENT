@@ -14,6 +14,7 @@ const authPool = new Pool({
   ssl: process.env.DATABASE_URL && process.env.NODE_ENV === "production"
     ? { rejectUnauthorized: false }
     : undefined,
+  options: process.env.DATABASE_URL ? "-c search_path=neon_auth,public" : undefined,
   max: 3,
 });
 
