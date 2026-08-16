@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { hasAuthConfiguration } from "@/lib/auth";
 import { hasDatabaseUrl, query } from "@/lib/db";
 import { hasDograhEnv } from "@/lib/env";
+import { hasRuntimeSecretEncryptionKey } from "@/lib/secrets";
 
 type ServiceState = "ready" | "configured" | "missing_configuration" | "unreachable" | "tenant_scoped" | "disabled";
 
@@ -52,6 +53,7 @@ export async function GET() {
     probeDevelopmentDograhFallback(),
   ]);
   const authState: ServiceState = hasAuthConfiguration() ? "configured" : "missing_configuration";
+  const runtimeSecretsState: ServiceState = hasRuntimeSecretEncryptionKey() ? "ready" : "missing_configuration";
   const ready = database.state === "ready" && authState === "configured";
 
   return NextResponse.json({
@@ -60,6 +62,10 @@ export async function GET() {
       web: { state: "ready" as ServiceState },
       database,
       auth: { state: authState, provider: "neon-managed-auth", schema: "neon_auth" },
+      runtimeSecretEncryption: {
+        state: runtimeSecretsState,
+        requiredFor: "Connecting and decrypting organization-scoped Dograh runtime credentials",
+      },
       tenantVoiceRuntime: {
         state: "tenant_scoped" as ServiceState,
         note: "Dograh credentials are organization-scoped and stored encrypted in Postgres; the global runtime is development-only.",
