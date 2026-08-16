@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { toNextJsHandler } from "better-auth/next-js";
 import { auth, hasAuthConfiguration } from "@/lib/auth";
 
-const handler = toNextJsHandler(auth);
+const handler = auth.handler();
 
 export async function GET(request: Request) {
   if (!hasAuthConfiguration()) {
