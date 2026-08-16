@@ -5,8 +5,8 @@ YOURAGENT is a multi-tenant SaaS for creating, testing, deploying, and operating
 ## Implemented architecture
 
 - **Web app:** Next.js 16 + React + TypeScript
-- **Primary database:** provider-neutral PostgreSQL through `pg` (Neon is the preferred free hosted option)
-- **Authentication:** Better Auth with email/password sessions stored in the same PostgreSQL database
+- **Primary database:** Neon PostgreSQL through `pg`
+- **Authentication:** Neon Managed Auth (Better Auth compatible) with email/password sessions in Neon's `neon_auth` schema
 - **Tenancy:** explicit organization membership checks in server routes and tenant-scoped SQL queries
 - **Voice runtime:** organization-scoped Dograh runtime adapter
 - **Runtime secrets:** AES-256-GCM encrypted per-organization runtime credentials stored server-side in PostgreSQL
@@ -22,7 +22,7 @@ YOURAGENT is a multi-tenant SaaS for creating, testing, deploying, and operating
 - **Safe redeploy:** new workflow is created first, existing phone routes are moved and provider-sync verified, then the previous workflow is paused; failed cutovers roll phone routes and runtime state back
 - **Pause/resume:** runtime and routed phone-number active state are synchronized with rollback on provider failure
 
-## Current validation gate
+## Validation gate
 
 Every push to `main` and every pull request runs:
 
@@ -38,48 +38,46 @@ CI must pass the production dependency audit, TypeScript compilation, Vitest sui
 
 ## Local development
 
-Copy `.env.example`, provide a PostgreSQL connection string and secrets, then:
+Copy `.env.example`, provide a Neon/PostgreSQL connection string, then:
 
 ```bash
 npm ci
 npm run dev
 ```
 
-After the database exists, initialize Better Auth and YOURAGENT tables once through the protected bootstrap endpoint:
+The application schema is idempotent and can be initialized through the protected bootstrap endpoint when `BOOTSTRAP_TOKEN` is configured:
 
 ```text
 POST /api/admin/bootstrap
 Authorization: Bearer <BOOTSTRAP_TOKEN>
 ```
 
-Then open `http://localhost:3000`.
+Neon manages the authentication schema separately; YOURAGENT does not create or migrate Neon Auth tables.
 
 ## Required production environment
 
-- `DATABASE_URL` — PostgreSQL connection string
-- `BETTER_AUTH_SECRET` — strong application auth secret
-- `BETTER_AUTH_URL` — canonical public app URL
-- `BOOTSTRAP_TOKEN` — one-time/protected database bootstrap authorization
-- `RUNTIME_SECRET_ENCRYPTION_KEY` — exactly 32 random bytes encoded as base64 or 64 hex characters
+- `DATABASE_URL` — Neon/PostgreSQL connection string
+- `RUNTIME_SECRET_ENCRYPTION_KEY` — required before storing Dograh/Twilio/provider credentials; exactly 32 random bytes encoded as base64 or 64 hex characters
 - `YOURAGENT_PUBLIC_URL` — canonical public URL used for runtime callbacks/embed origin restrictions
 
-Optional development-only Dograh fallback:
+Optional:
 
-- `DOGRAH_BASE_URL`
-- `DOGRAH_API_KEY`
-- `ALLOW_GLOBAL_DOGRAH_FALLBACK=true`
+- `NEON_AUTH_BASE_URL` — overrides the provisioned Managed Auth endpoint
+- `NEON_AUTH_COOKIE_SECRET` — independent 32+ character session-cookie secret; when absent, YOURAGENT derives a session-only key from `DATABASE_URL`
+- `BOOTSTRAP_TOKEN` — protects the optional schema bootstrap endpoint
+- `DOGRAH_BASE_URL`, `DOGRAH_API_KEY`, `ALLOW_GLOBAL_DOGRAH_FALLBACK=true` — development-only Dograh fallback
 
-Production customers should connect their own organization-scoped Dograh runtime from the Runtime settings screen instead of using the global fallback.
+Production customers should connect their own organization-scoped Dograh runtime from Runtime settings instead of using the global fallback.
 
 ## Production activation order
 
-1. Provision a PostgreSQL database (Neon works without changing application code).
-2. Add the required environment variables to the deployment.
-3. Call the protected `/api/admin/bootstrap` endpoint once and verify it returns `ok: true`.
+1. Connect Neon PostgreSQL through `DATABASE_URL`.
+2. Enable Neon Managed Auth and trust the application domains.
+3. Apply/verify the YOURAGENT application schema.
 4. Verify `/api/health` returns HTTP 200 with database/auth ready.
 5. Create/sign in to an account.
 6. Create an agent and verify immutable version persistence.
-7. Connect that organization to Dograh.
+7. Add `RUNTIME_SECRET_ENCRYPTION_KEY`, then connect that organization to Dograh.
 8. Run the browser Test Agent flow.
 9. Connect Twilio and route a number when PSTN calling is needed.
 10. Deploy and verify call completion artifacts in Call History.
