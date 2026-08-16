@@ -53,8 +53,10 @@ export async function POST(request: Request) {
     }
     if (!existingCall) {
       existingCall = (await query<ExistingCallRow>(
-        `select id, metadata from calls where runtime_provider = 'dograh' and external_run_id = $1 limit 1`,
-        [String(run.id)],
+        `select id, metadata from calls
+          where organization_id = $1 and runtime_provider = 'dograh' and external_run_id = $2
+          limit 1`,
+        [deployment.organization_id, String(run.id)],
       )).rows[0] ?? null;
     }
 
@@ -89,7 +91,7 @@ export async function POST(request: Request) {
            organization_id=$1, agent_id=$2, agent_version=$3, provider_call_id=$4, runtime_provider='dograh', external_run_id=$4,
            direction=$5, status=$6, started_at=$7, ended_at=$8, transcript_url=$9, recording_url=$10,
            cost_info=$11::jsonb, usage_info=$12::jsonb, gathered_context=$13::jsonb, is_test=false, metadata=$14::jsonb
-         where id=$15`,
+         where id=$15 and organization_id=$1`,
         [...values, existingCall.id],
       );
       return NextResponse.json({ ok: true, callId: existingCall.id, updated: true });
@@ -100,7 +102,23 @@ export async function POST(request: Request) {
       `insert into calls
         (id, organization_id, agent_id, agent_version, provider_call_id, runtime_provider, external_run_id, direction, status,
          started_at, ended_at, transcript_url, recording_url, cost_info, usage_info, gathered_context, is_test, metadata)
-       values ($15,$1,$2,$3,$4,'dograh',$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,false,$14::jsonb)`,
+       values ($15,$1,$2,$3,$4,'dograh',$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,false,$14::jsonb)
+       on conflict (organization_id, runtime_provider, external_run_id)
+         where runtime_provider is not null and external_run_id is not null
+       do update set
+         agent_id = excluded.agent_id,
+         agent_version = excluded.agent_version,
+         provider_call_id = excluded.provider_call_id,
+         direction = excluded.direction,
+         status = excluded.status,
+         started_at = excluded.started_at,
+         ended_at = excluded.ended_at,
+         transcript_url = excluded.transcript_url,
+         recording_url = excluded.recording_url,
+         cost_info = excluded.cost_info,
+         usage_info = excluded.usage_info,
+         gathered_context = excluded.gathered_context,
+         metadata = excluded.metadata`,
       [...values, callId],
     );
     return NextResponse.json({ ok: true, callId, created: true });
