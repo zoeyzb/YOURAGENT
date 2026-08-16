@@ -35,9 +35,11 @@ create table if not exists agent_versions (
   status text not null check (status in ('draft','testing','published','paused')),
   config jsonb not null,
   config_hash text not null,
+  restored_from_version integer,
   created_at timestamptz not null default now(),
   unique(agent_id, version)
 );
+alter table agent_versions add column if not exists restored_from_version integer;
 create index if not exists agent_versions_agent_idx on agent_versions(agent_id, version desc);
 
 create table if not exists calls (
