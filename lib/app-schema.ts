@@ -63,8 +63,9 @@ create table if not exists calls (
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
-create unique index if not exists calls_runtime_run_unique
-  on calls(runtime_provider, external_run_id)
+drop index if exists calls_runtime_run_unique;
+create unique index if not exists calls_org_runtime_run_unique
+  on calls(organization_id, runtime_provider, external_run_id)
   where runtime_provider is not null and external_run_id is not null;
 create index if not exists calls_org_created_idx on calls(organization_id, created_at desc);
 
