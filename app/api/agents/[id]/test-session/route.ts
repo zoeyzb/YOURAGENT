@@ -158,7 +158,8 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
             (organization_id, agent_id, agent_version, provider_call_id, runtime_provider, external_run_id, direction, status,
              started_at, transcript_url, recording_url, cost_info, usage_info, gathered_context, is_test, metadata)
            values ($1,$2,$3,$4,'dograh',$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,true,$13::jsonb)
-           on conflict (runtime_provider, external_run_id) where runtime_provider is not null and external_run_id is not null
+           on conflict (organization_id, runtime_provider, external_run_id)
+             where runtime_provider is not null and external_run_id is not null
            do update set status = excluded.status, transcript_url = excluded.transcript_url, recording_url = excluded.recording_url,
              cost_info = excluded.cost_info, usage_info = excluded.usage_info, gathered_context = excluded.gathered_context, metadata = excluded.metadata`,
           [session.organization_id, session.agent_id, session.agent_version, String(run.id), run.call_type, run.is_completed ? "completed" : "in_progress", run.created_at, run.transcript_public_url ?? run.transcript_url ?? null, run.recording_public_url ?? run.recording_url ?? null, JSON.stringify(run.cost_info ?? null), JSON.stringify(run.usage_info ?? null), JSON.stringify(run.gathered_context ?? null), callMetadata],
