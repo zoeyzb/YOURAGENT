@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { DograhTelephonyAdapter } from "@/lib/adapters/dograh-telephony";
+import { query } from "@/lib/db";
 import { organizationAuthErrorStatus, requireOrganizationAdmin } from "@/lib/org-auth";
 import { resolveDograhConnection } from "@/lib/runtime-connection";
 
@@ -27,38 +28,29 @@ export async function POST(request: Request) {
 
   try {
     const payload = CreatePhoneRouteRequest.parse(await request.json());
-    const { supabase } = await requireOrganizationAdmin(payload.organizationId);
+    await requireOrganizationAdmin(payload.organizationId, request.headers);
 
-    const { data: connection, error: connectionError } = await supabase
-      .from("telephony_connections")
-      .select("id,provider,external_config_id,status")
-      .eq("id", payload.telephonyConnectionId)
-      .eq("organization_id", payload.organizationId)
-      .eq("provider", "twilio")
-      .maybeSingle();
-    if (connectionError) throw connectionError;
+    const connectionResult = await query<{ id: string; provider: string; external_config_id: string; status: string }>(
+      `select id, provider, external_config_id, status from telephony_connections
+        where id = $1 and organization_id = $2 and provider = 'twilio' limit 1`,
+      [payload.telephonyConnectionId, payload.organizationId],
+    );
+    const connection = connectionResult.rows[0];
     if (!connection || connection.status !== "active") throw new Error("TELEPHONY_CONNECTION_NOT_ACTIVE");
 
-    const { data: agent, error: agentError } = await supabase
-      .from("agents")
-      .select("id,status")
-      .eq("id", payload.agentId)
-      .eq("organization_id", payload.organizationId)
-      .maybeSingle();
-    if (agentError) throw agentError;
-    if (!agent) throw new Error("AGENT_NOT_FOUND");
+    const agentResult = await query<{ id: string; status: string }>(
+      `select id, status from agents where id = $1 and organization_id = $2 limit 1`,
+      [payload.agentId, payload.organizationId],
+    );
+    if (!agentResult.rows[0]) throw new Error("AGENT_NOT_FOUND");
 
-    const { data: deployment, error: deploymentError } = await supabase
-      .from("runtime_deployments")
-      .select("external_deployment_id,status,created_at")
-      .eq("agent_id", payload.agentId)
-      .eq("organization_id", payload.organizationId)
-      .eq("provider", "dograh")
-      .eq("status", "ready")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (deploymentError) throw deploymentError;
+    const deploymentResult = await query<{ external_deployment_id: string; status: string; created_at: string }>(
+      `select external_deployment_id, status, created_at from runtime_deployments
+        where agent_id = $1 and organization_id = $2 and provider = 'dograh' and status = 'ready'
+        order by created_at desc limit 1`,
+      [payload.agentId, payload.organizationId],
+    );
+    const deployment = deploymentResult.rows[0];
     if (!deployment) throw new Error("AGENT_NOT_DEPLOYED");
 
     const workflowId = dograhWorkflowId(deployment.external_deployment_id);
@@ -76,44 +68,42 @@ export async function POST(request: Request) {
     });
     remotePhoneNumberId = remote.id;
 
-    const { data: persisted, error: persistenceError } = await supabase
-      .from("phone_number_routes")
-      .insert({
-        organization_id: payload.organizationId,
-        telephony_connection_id: connection.id,
-        external_phone_number_id: String(remote.id),
-        address: remote.address,
-        label: remote.label,
-        agent_id: payload.agentId,
-        external_workflow_id: String(workflowId),
-        is_active: remote.is_active,
-        is_default_caller_id: remote.is_default_caller_id,
-        provider_sync_ok: remote.provider_sync?.ok ?? null,
-        provider_sync_message: remote.provider_sync?.message ?? null,
-      })
-      .select("id,address,label,agent_id,is_active,is_default_caller_id,provider_sync_ok,provider_sync_message,created_at")
-      .single();
-    if (persistenceError) throw persistenceError;
+    const persistedResult = await query<{
+      id: string; address: string; label: string | null; agent_id: string | null; is_active: boolean; is_default_caller_id: boolean; provider_sync_ok: boolean | null; provider_sync_message: string | null; created_at: string;
+    }>(
+      `insert into phone_number_routes
+        (organization_id, telephony_connection_id, external_phone_number_id, address, label, agent_id,
+         external_workflow_id, is_active, is_default_caller_id, provider_sync_ok, provider_sync_message)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       returning id,address,label,agent_id,is_active,is_default_caller_id,provider_sync_ok,provider_sync_message,created_at`,
+      [
+        payload.organizationId,
+        connection.id,
+        String(remote.id),
+        remote.address,
+        remote.label ?? null,
+        payload.agentId,
+        String(workflowId),
+        remote.is_active,
+        remote.is_default_caller_id,
+        remote.provider_sync?.ok ?? null,
+        remote.provider_sync?.message ?? null,
+      ],
+    );
 
     remotePhoneNumberId = null;
     return NextResponse.json({
-      route: persisted,
+      route: persistedResult.rows[0],
       providerSync: remote.provider_sync ?? null,
       live: remote.provider_sync?.ok !== false,
     }, { status: 201 });
   } catch (error) {
     if (remotePhoneNumberId && remoteConfigId && adapter) {
-      try {
-        await adapter.deletePhoneNumber(remoteConfigId, remotePhoneNumberId);
-      } catch {
-        // Preserve the root error; reconciliation can remove the orphan later.
-      }
+      try { await adapter.deletePhoneNumber(remoteConfigId, remotePhoneNumberId); } catch { /* preserve root failure */ }
     }
-
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "INVALID_PHONE_ROUTE", issues: error.issues }, { status: 400 });
     }
-
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
     const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED")
       ? 503
