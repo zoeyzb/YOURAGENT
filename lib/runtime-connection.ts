@@ -1,31 +1,39 @@
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { query } from "@/lib/db";
 import { requireDograhDevFallbackEnv } from "@/lib/env";
+import { decryptSecret } from "@/lib/secrets";
 
 export type RuntimeConnection = {
   provider: "dograh";
   baseUrl: string;
   apiKey: string;
   externalOrganizationId?: string | null;
-  source: "tenant_vault" | "development_fallback";
+  source: "tenant_encrypted_postgres" | "development_fallback";
 };
 
 export async function resolveDograhConnection(organizationId: string): Promise<RuntimeConnection> {
   try {
-    const admin = createSupabaseAdminClient();
-    const { data, error } = await admin.rpc("resolve_runtime_connection_secret", {
-      p_organization_id: organizationId,
-      p_provider: "dograh",
-    });
-    if (error) throw error;
+    const result = await query<{
+      base_url: string;
+      encrypted_api_key: string;
+      external_organization_id: string | null;
+    }>(
+      `select base_url, encrypted_api_key, external_organization_id
+         from runtime_connections
+        where organization_id = $1
+          and provider = 'dograh'
+          and status = 'active'
+        limit 1`,
+      [organizationId],
+    );
 
-    const row = Array.isArray(data) ? data[0] : data;
-    if (row?.base_url && row?.api_key) {
+    const row = result.rows[0];
+    if (row?.base_url && row?.encrypted_api_key) {
       return {
         provider: "dograh",
         baseUrl: row.base_url,
-        apiKey: row.api_key,
-        externalOrganizationId: row.external_organization_id ?? null,
-        source: "tenant_vault",
+        apiKey: decryptSecret(row.encrypted_api_key),
+        externalOrganizationId: row.external_organization_id,
+        source: "tenant_encrypted_postgres",
       };
     }
   } catch (error) {
