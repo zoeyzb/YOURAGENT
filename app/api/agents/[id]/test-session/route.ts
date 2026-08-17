@@ -111,10 +111,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const payload = RegisterRunRequest.parse(await request.json());
     const user = await requireUser(request);
     const session = (await query<{ id: string }>(
-      `select id from runtime_test_sessions where id = $1 and agent_id = $2 and created_by = $3 limit 1`,
+      `select id from runtime_test_sessions
+        where id = $1 and agent_id = $2 and created_by = $3
+          and status in ('created','active') and expires_at > now()
+        limit 1`,
       [payload.sessionId, id, user.id],
     )).rows[0];
-    if (!session) return NextResponse.json({ error: "TEST_SESSION_NOT_FOUND" }, { status: 404 });
+    if (!session) return NextResponse.json({ error: "TEST_SESSION_NOT_ACTIVE" }, { status: 409 });
 
     await query(`update runtime_test_sessions set workflow_run_id = $1, status = 'active', updated_at = now() where id = $2`, [String(payload.runId), session.id]);
     return NextResponse.json({ status: "active", runId: String(payload.runId) });
@@ -147,7 +150,7 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     const toolAdapter = new DograhToolAdapter(runtime.baseUrl, runtime.apiKey);
     const createdToolUuids = createdToolUuidsFromMetadata(session.metadata);
     let callIngested = false;
-    let warning: string | null = null;
+    let warning: string | null = session.workflow_run_id ? null : "NO_RUNTIME_RUN_REGISTERED";
 
     if (session.workflow_run_id) {
       try {
@@ -178,8 +181,10 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
       if (results.some((result) => result.status === "rejected")) warning = warning ?? "PREVIEW_TOOL_CLEANUP_FAILED";
     }
 
-    await query(`update runtime_test_sessions set status = $1, last_error = $2, updated_at = now() where id = $3`, [warning ? "failed" : "completed", warning, session.id]);
-    return NextResponse.json({ status: warning ? "failed" : "completed", callIngested, warning });
+    const finalStatus = warning || !callIngested ? "failed" : "completed";
+    const finalWarning = warning ?? (!callIngested ? "RUNTIME_CALL_NOT_INGESTED" : null);
+    await query(`update runtime_test_sessions set status = $1, last_error = $2, updated_at = now() where id = $3`, [finalStatus, finalWarning, session.id]);
+    return NextResponse.json({ status: finalStatus, callIngested, warning: finalWarning });
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
     return NextResponse.json({ error: message }, { status: message === "UNAUTHENTICATED" ? 401 : serviceUnavailable(message) ? 503 : 500 });
