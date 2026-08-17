@@ -2,12 +2,17 @@ import { z } from "zod";
 import type { AgentConfig } from "@/lib/domain";
 import { resolveSkills } from "@/lib/skills";
 
-export const HttpActionInputSchema = z.object({
+const HttpActionSchema = z.object({
   label: z.string().trim().min(2).max(80),
   url: z.string().url().refine((value) => value.startsWith("http://") || value.startsWith("https://"), "Action URL must use HTTP(S)"),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
   credentialUuid: z.string().trim().min(1).max(255).optional(),
-}).optional();
+});
+
+// Keep the singular field for API compatibility with older clients while the
+// current builder sends httpActions. New clients can create up to 12 distinct
+// callable HTTP tools on one agent.
+export const HttpActionInputSchema = HttpActionSchema.optional();
 
 export const TransferInputSchema = z.object({
   label: z.string().trim().min(2).max(80),
@@ -21,6 +26,7 @@ export const AgentBuilderInputSchema = z.object({
   objective: z.string().trim().min(10).max(1000),
   direction: z.enum(["inbound", "outbound", "both"]),
   voiceProfile: z.string().trim().min(2).default("warm-professional"),
+  httpActions: z.array(HttpActionSchema).max(12).optional(),
   httpAction: HttpActionInputSchema,
   transfer: TransferInputSchema,
 });
@@ -28,6 +34,11 @@ export const AgentBuilderInputSchema = z.object({
 export type AgentBuilderInput = z.infer<typeof AgentBuilderInputSchema>;
 type Workflow = AgentConfig["workflow"];
 type WorkflowNode = Workflow["nodes"][number];
+
+function requestedHttpActions(payload: AgentBuilderInput) {
+  if (payload.httpActions !== undefined) return payload.httpActions;
+  return payload.httpAction ? [payload.httpAction] : [];
+}
 
 function cloneWorkflow(workflow: Workflow): Workflow {
   return {
@@ -39,7 +50,7 @@ function cloneWorkflow(workflow: Workflow): Workflow {
 function removeSimpleManagedNode(workflow: Workflow, nodeId: string) {
   const incoming = workflow.edges.filter((edge) => edge.to === nodeId);
   const outgoing = workflow.edges.filter((edge) => edge.from === nodeId);
-  if (incoming.length !== 1 || outgoing.length !== 1) return;
+  if (incoming.length !== 1 || outgoing.length !== 1) return false;
 
   const [before] = incoming;
   const [after] = outgoing;
@@ -50,51 +61,84 @@ function removeSimpleManagedNode(workflow: Workflow, nodeId: string) {
     to: after.to,
     ...(before.condition ? { condition: before.condition } : after.condition ? { condition: after.condition } : {}),
   });
+  return true;
 }
 
-function insertManagedNodeBeforeEnd(workflow: Workflow, node: WorkflowNode) {
-  const end = workflow.nodes.find((item) => item.type === "end");
-  if (!end) return;
+function insertManagedNodeBefore(workflow: Workflow, node: WorkflowNode, targetId: string) {
+  const target = workflow.nodes.find((item) => item.id === targetId);
+  if (!target) return false;
 
-  const incoming = workflow.edges.filter((edge) => edge.to === end.id);
+  const incoming = workflow.edges.filter((edge) => edge.to === target.id);
   const preferred = [...incoming].reverse().find((edge) => !edge.condition) ?? incoming[incoming.length - 1];
   workflow.nodes.push(node);
+  if (!preferred) return true;
 
-  if (!preferred) return;
   workflow.edges = workflow.edges.filter((edge) => edge !== preferred);
   workflow.edges.push(
     { from: preferred.from, to: node.id, ...(preferred.condition ? { condition: preferred.condition } : {}) },
-    { from: node.id, to: end.id },
+    { from: node.id, to: target.id },
   );
+  return true;
+}
+
+function managedActionId(index: number) {
+  return `action-${index + 1}`;
+}
+
+function isManagedActionNode(node: WorkflowNode) {
+  return node.type === "tool" && /^action-\d+$/.test(node.id);
+}
+
+function actionConfig(action: ReturnType<typeof requestedHttpActions>[number]) {
+  return {
+    url: action.url,
+    method: action.method,
+    description: `Use ${action.label} when the caller has provided the information required to complete the requested action.`,
+    ...(action.credentialUuid ? { credentialUuid: action.credentialUuid } : {}),
+  };
 }
 
 function updatePreservedWorkflow(previous: AgentConfig, payload: AgentBuilderInput): Workflow {
   const workflow = cloneWorkflow(previous.workflow);
+  const actions = requestedHttpActions(payload);
 
   const discovery = workflow.nodes.find((node) => node.id === "discover") ?? workflow.nodes.find((node) => node.type === "ask");
-  if (discovery) {
-    discovery.config = { ...discovery.config, objective: payload.objective };
+  if (discovery) discovery.config = { ...discovery.config, objective: payload.objective };
+
+  // Only touch nodes owned by the simple settings editor. A custom tool created
+  // in the graph editor must never be silently overwritten because its type is
+  // also "tool".
+  const managedActions = workflow.nodes.filter(isManagedActionNode);
+  for (const node of [...managedActions].sort((a, b) => b.id.localeCompare(a.id))) {
+    const match = /^action-(\d+)$/.exec(node.id);
+    if (match && Number(match[1]) > actions.length) removeSimpleManagedNode(workflow, node.id);
   }
 
-  const existingAction = workflow.nodes.find((node) => node.id === "action-1") ?? workflow.nodes.find((node) => node.type === "tool");
-  if (payload.httpAction) {
-    const actionConfig = {
-      url: payload.httpAction.url,
-      method: payload.httpAction.method,
-      description: `Use ${payload.httpAction.label} when the caller has provided the information required to complete the requested action.`,
-      ...(payload.httpAction.credentialUuid ? { credentialUuid: payload.httpAction.credentialUuid } : {}),
-    };
-    if (existingAction) {
-      existingAction.label = payload.httpAction.label;
-      existingAction.config = { ...existingAction.config, ...actionConfig };
-    } else {
-      insertManagedNodeBeforeEnd(workflow, { id: "action-1", type: "tool", label: payload.httpAction.label, config: actionConfig });
+  for (const [index, action] of actions.entries()) {
+    const id = managedActionId(index);
+    const existing = workflow.nodes.find((node) => node.id === id && node.type === "tool");
+    if (existing) {
+      existing.label = action.label;
+      existing.config = { ...existing.config, ...actionConfig(action) };
+      // Explicitly removing a credential in settings must not leave a stale UUID.
+      if (!action.credentialUuid) delete existing.config.credentialUuid;
+      continue;
     }
-  } else if (workflow.nodes.some((node) => node.id === "action-1")) {
-    removeSimpleManagedNode(workflow, "action-1");
+
+    const transfer = workflow.nodes.find((node) => node.id === "transfer-1");
+    const end = workflow.nodes.find((node) => node.type === "end");
+    const targetId = transfer?.id ?? end?.id;
+    if (targetId) {
+      insertManagedNodeBefore(workflow, {
+        id,
+        type: "tool",
+        label: action.label,
+        config: actionConfig(action),
+      }, targetId);
+    }
   }
 
-  const existingTransfer = workflow.nodes.find((node) => node.id === "transfer-1") ?? workflow.nodes.find((node) => node.type === "transfer");
+  const existingTransfer = workflow.nodes.find((node) => node.id === "transfer-1");
   if (payload.transfer) {
     const transferConfig = {
       destination: payload.transfer.destination,
@@ -103,10 +147,12 @@ function updatePreservedWorkflow(previous: AgentConfig, payload: AgentBuilderInp
     if (existingTransfer) {
       existingTransfer.label = payload.transfer.label;
       existingTransfer.config = { ...existingTransfer.config, ...transferConfig };
+      if (!payload.transfer.message) delete existingTransfer.config.message;
     } else {
-      insertManagedNodeBeforeEnd(workflow, { id: "transfer-1", type: "transfer", label: payload.transfer.label, config: transferConfig });
+      const end = workflow.nodes.find((node) => node.type === "end");
+      if (end) insertManagedNodeBefore(workflow, { id: "transfer-1", type: "transfer", label: payload.transfer.label, config: transferConfig }, end.id);
     }
-  } else if (workflow.nodes.some((node) => node.id === "transfer-1")) {
+  } else if (existingTransfer) {
     removeSimpleManagedNode(workflow, "transfer-1");
   }
 
@@ -119,19 +165,14 @@ function buildDefaultWorkflow(payload: AgentBuilderInput): Workflow {
     { id: "discover", type: "ask", label: "Discover need", config: { objective: payload.objective } },
   ];
 
-  if (payload.httpAction) {
+  requestedHttpActions(payload).forEach((action, index) => {
     workflowNodes.push({
-      id: "action-1",
+      id: managedActionId(index),
       type: "tool",
-      label: payload.httpAction.label,
-      config: {
-        url: payload.httpAction.url,
-        method: payload.httpAction.method,
-        description: `Use ${payload.httpAction.label} when the caller has provided the information required to complete the requested action.`,
-        ...(payload.httpAction.credentialUuid ? { credentialUuid: payload.httpAction.credentialUuid } : {}),
-      },
+      label: action.label,
+      config: actionConfig(action),
     });
-  }
+  });
 
   if (payload.transfer) {
     workflowNodes.push({
