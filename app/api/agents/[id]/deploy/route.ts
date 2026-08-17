@@ -16,6 +16,7 @@ type DeploymentRow = {
   metadata: Record<string, unknown> | null;
   created_at: string;
 };
+type VerifiedTestRow = { id: string; workflow_run_id: string; updated_at: string };
 type PhoneRouteRow = {
   id: string;
   telephony_connection_id: string;
@@ -102,6 +103,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: "VERSION_ALREADY_DEPLOYED", deploymentId: previousDeployment.id }, { status: 409 });
     }
 
+    const verifiedTest = (await query<VerifiedTestRow>(
+      `select id, workflow_run_id, updated_at
+         from runtime_test_sessions
+        where organization_id = $1 and agent_id = $2 and agent_version = $3
+          and provider = 'dograh' and status = 'completed' and workflow_run_id is not null
+        order by updated_at desc limit 1`,
+      [agent.organization_id, id, version.version],
+    )).rows[0] ?? null;
+    if (!verifiedTest) {
+      return NextResponse.json({
+        error: "VERSION_NOT_TESTED",
+        message: `Agent v${version.version} must complete a real Dograh test run before deployment.`,
+      }, { status: 409 });
+    }
+
     const config = AgentConfigSchema.parse(version.config);
     const runtime = await resolveDograhConnection(agent.organization_id);
     adapter = new DograhAdapter(runtime.baseUrl, runtime.apiKey);
@@ -133,7 +149,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
        returning id, external_deployment_id, external_workflow_uuid, status, created_at`,
       [
         agent.organization_id, id, version.version, deployment.deploymentId, deployment.workflowUuid, webhookTokenHash, deployment.status,
-        JSON.stringify({ runtime_source: runtime.source, external_organization_id: runtime.externalOrganizationId ?? null, completion_webhook_configured: true, tool_bindings: provisioned.bindings, created_tool_uuids: createdToolUuids, replaces_deployment_id: previousDeployment?.id ?? null }),
+        JSON.stringify({
+          runtime_source: runtime.source,
+          external_organization_id: runtime.externalOrganizationId ?? null,
+          completion_webhook_configured: true,
+          tool_bindings: provisioned.bindings,
+          created_tool_uuids: createdToolUuids,
+          replaces_deployment_id: previousDeployment?.id ?? null,
+          verified_test_session_id: verifiedTest.id,
+          verified_test_workflow_run_id: verifiedTest.workflow_run_id,
+          verified_test_completed_at: verifiedTest.updated_at,
+        }),
       ],
     )).rows[0];
     persistedDeploymentId = persisted.id;
@@ -223,7 +249,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const status = message.startsWith("TENANT_RUNTIME_NOT_CONFIGURED")
       ? 503
-      : message === "VERSION_ALREADY_DEPLOYED"
+      : message === "VERSION_ALREADY_DEPLOYED" || message === "VERSION_NOT_TESTED"
         ? 409
         : organizationAuthErrorStatus(message);
     return NextResponse.json({ error: message }, { status });
