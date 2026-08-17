@@ -35,6 +35,31 @@ describe("multi API agent builder", () => {
     expect(config.workflow.edges).toContainEqual({ from: "action-1", to: "action-2" });
   });
 
+  it("stores nested Dograh JSON body templates on managed API nodes", () => {
+    const bodyTemplate = {
+      customer: { email: "{{email}}" },
+      tags: ["voice", "{{source}}"],
+    };
+    const payload = AgentBuilderInputSchema.parse({ ...base, httpActions: [
+      { label: "Create lead", url: "https://api.example.com/leads", method: "POST", bodyTemplate, parameters: [
+        { name: "email", type: "string", description: "Customer email", required: true },
+        { name: "source", type: "string", description: "Lead source", required: true },
+      ] },
+    ] });
+    const config = buildAgentConfig({ ...ids, version: 1, payload });
+    expect(config.workflow.nodes.find((node) => node.id === "action-1")?.config.bodyTemplate).toEqual(bodyTemplate);
+  });
+
+  it("preserves an existing body template when a later settings save omits it", () => {
+    const previous = buildAgentConfig({ ...ids, version: 1, payload: AgentBuilderInputSchema.parse({ ...base, httpActions: [
+      { label: "Create lead", url: "https://api.example.com/leads", method: "POST", bodyTemplate: { email: "{{email}}" } },
+    ] }) });
+    const next = buildAgentConfig({ ...ids, version: 2, payload: AgentBuilderInputSchema.parse({ ...base, httpActions: [
+      { label: "Create lead updated", url: "https://api.example.com/leads", method: "POST" },
+    ] }), previous });
+    expect(next.workflow.nodes.find((node) => node.id === "action-1")?.config.bodyTemplate).toEqual({ email: "{{email}}" });
+  });
+
   it("rejects unsafe or malformed tool argument names", () => {
     expect(() => AgentBuilderInputSchema.parse({ ...base, httpActions: [
       { label: "Bad action", url: "https://api.example.com", method: "POST", parameters: [
