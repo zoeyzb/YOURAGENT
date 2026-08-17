@@ -79,7 +79,7 @@ export class DograhToolAdapter {
     credentialUuid?: string;
     headers?: Record<string, string>;
     parameters?: DograhToolParameter[];
-    bodyTemplate?: Record<string, unknown>;
+    bodyTemplate?: unknown;
     timeoutMs?: number;
   }): Promise<DograhCreatedTool> {
     const url = new URL(input.url);
