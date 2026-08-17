@@ -2,16 +2,21 @@ import { z } from "zod";
 import type { AgentConfig } from "@/lib/domain";
 import { resolveSkills } from "@/lib/skills";
 
+const HttpActionParameterSchema = z.object({
+  name: z.string().trim().min(1).max(80).regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Parameter names must be API-safe identifiers"),
+  type: z.enum(["string", "number", "boolean", "object", "array"]),
+  description: z.string().trim().min(3).max(240),
+  required: z.boolean().default(true),
+});
+
 const HttpActionSchema = z.object({
   label: z.string().trim().min(2).max(80),
   url: z.string().url().refine((value) => value.startsWith("http://") || value.startsWith("https://"), "Action URL must use HTTP(S)"),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
   credentialUuid: z.string().trim().min(1).max(255).optional(),
+  parameters: z.array(HttpActionParameterSchema).max(24).default([]),
 });
 
-// Keep the singular field for API compatibility with older clients while the
-// current builder sends httpActions. New clients can create up to 12 distinct
-// callable HTTP tools on one agent.
 export const HttpActionInputSchema = HttpActionSchema.optional();
 
 export const TransferInputSchema = z.object({
@@ -93,7 +98,8 @@ function actionConfig(action: ReturnType<typeof requestedHttpActions>[number]) {
   return {
     url: action.url,
     method: action.method,
-    description: `Use ${action.label} when the caller has provided the information required to complete the requested action.`,
+    description: `Use ${action.label} only when the caller has supplied every required input. Ask naturally for missing required inputs before calling this tool.`,
+    parameters: action.parameters,
     ...(action.credentialUuid ? { credentialUuid: action.credentialUuid } : {}),
   };
 }
@@ -105,9 +111,6 @@ function updatePreservedWorkflow(previous: AgentConfig, payload: AgentBuilderInp
   const discovery = workflow.nodes.find((node) => node.id === "discover") ?? workflow.nodes.find((node) => node.type === "ask");
   if (discovery) discovery.config = { ...discovery.config, objective: payload.objective };
 
-  // Only touch nodes owned by the simple settings editor. A custom tool created
-  // in the graph editor must never be silently overwritten because its type is
-  // also "tool".
   const managedActions = workflow.nodes.filter(isManagedActionNode);
   for (const node of [...managedActions].sort((a, b) => b.id.localeCompare(a.id))) {
     const match = /^action-(\d+)$/.exec(node.id);
@@ -120,7 +123,6 @@ function updatePreservedWorkflow(previous: AgentConfig, payload: AgentBuilderInp
     if (existing) {
       existing.label = action.label;
       existing.config = { ...existing.config, ...actionConfig(action) };
-      // Explicitly removing a credential in settings must not leave a stale UUID.
       if (!action.credentialUuid) delete existing.config.credentialUuid;
       continue;
     }
