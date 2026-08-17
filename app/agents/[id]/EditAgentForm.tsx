@@ -22,7 +22,7 @@ function makeAction(action?: InitialAction): ActionDraft {
     method: action?.method ?? "POST",
     credentialUuid: action?.credentialUuid ?? "",
     parameters: (action?.parameters ?? []).map(makeParameter),
-    bodyTemplateText: action?.bodyTemplate === undefined ? "" : JSON.stringify(action.bodyTemplate, null, 2),
+    bodyTemplateText: action?.bodyTemplate == null ? "" : JSON.stringify(action.bodyTemplate, null, 2),
   };
 }
 function usesJsonBody(method: HttpMethod) {
@@ -58,12 +58,12 @@ export function EditAgentForm(props: {
     let normalizedActions: Array<Record<string, unknown>>;
     try {
       normalizedActions = httpActions.map(({ id: _id, credentialUuid, parameters, bodyTemplateText, ...action }) => {
-        const bodyTemplate = usesJsonBody(action.method) && bodyTemplateText.trim() ? JSON.parse(bodyTemplateText) : undefined;
+        const bodyTemplate = usesJsonBody(action.method) && bodyTemplateText.trim() ? JSON.parse(bodyTemplateText) : null;
         return {
           ...action,
           parameters: parameters.map(({ id: _parameterId, ...parameter }) => parameter),
           ...(credentialUuid.trim() ? { credentialUuid: credentialUuid.trim() } : {}),
-          ...(bodyTemplate !== undefined ? { bodyTemplate } : {}),
+          bodyTemplate,
         };
       });
     } catch {
@@ -125,8 +125,8 @@ export function EditAgentForm(props: {
             onChange={(event) => patchAction(action.id, { bodyTemplateText: event.target.value })}
             placeholder={'{"customer":{"email":"{{email}}"},"tags":["voice"]}'}
           />
-          <small style={{ color: "#9ca3af" }}>Leave blank to send all collected inputs directly. Use Dograh placeholders such as {"{{email}}"}; nested objects and arrays are supported.</small>
-        </label> : <p style={{ color: "#9ca3af", marginTop: 12 }}>Dograh sends collected inputs for {action.method} as query parameters, so no request body is used.</p>}
+          <small style={{ color: "#9ca3af" }}>Leave blank to remove any custom template and send all collected inputs directly. Use Dograh placeholders such as {"{{email}}"}; nested objects and arrays are supported.</small>
+        </label> : <p style={{ color: "#9ca3af", marginTop: 12 }}>Dograh sends collected inputs for {action.method} as query parameters, so no request body is used. Saving also clears any old body template from this action.</p>}
       </div>)}
       <button className="btn" type="button" style={{ marginTop: 12 }} onClick={() => setHttpActions((current) => [...current, makeAction()])}>+ Add another API action</button>
     </div>
