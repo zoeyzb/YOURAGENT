@@ -75,7 +75,7 @@ function actionConfig(action: ReturnType<typeof requestedHttpActions>[number]) {
     description: `Use ${action.label} only when the caller has supplied every required input. Ask naturally for missing required inputs before calling this tool.`,
     parameters: action.parameters ?? [],
     ...(action.credentialUuid ? { credentialUuid: action.credentialUuid } : {}),
-    ...(action.bodyTemplate !== undefined ? { bodyTemplate: action.bodyTemplate } : {}),
+    ...(action.bodyTemplate !== undefined && action.bodyTemplate !== null ? { bodyTemplate: action.bodyTemplate } : {}),
   };
 }
 
@@ -91,6 +91,7 @@ function updatePreservedWorkflow(previous: AgentConfig, payload: AgentBuilderInp
     if (existing) {
       existing.label = action.label; existing.config = { ...existing.config, ...actionConfig(action) };
       if (!action.credentialUuid) delete existing.config.credentialUuid;
+      if (action.bodyTemplate === null) delete existing.config.bodyTemplate;
       continue;
     }
     const transfer = workflow.nodes.find((node) => node.id === "transfer-1"), end = workflow.nodes.find((node) => node.type === "end"), targetId = transfer?.id ?? end?.id;
