@@ -64,10 +64,7 @@ export async function provisionDograhWorkflowTools(
       ? Object.fromEntries(Object.entries(headersRaw as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
       : undefined;
     const parameters = nodeConfig.parameters ? ParametersSchema.parse(nodeConfig.parameters) as DograhToolParameter[] : undefined;
-    const bodyTemplateRaw = nodeConfig.bodyTemplate;
-    const bodyTemplate = bodyTemplateRaw && typeof bodyTemplateRaw === "object" && !Array.isArray(bodyTemplateRaw)
-      ? bodyTemplateRaw as Record<string, unknown>
-      : undefined;
+    const bodyTemplate = nodeConfig.bodyTemplate !== undefined ? nodeConfig.bodyTemplate : undefined;
     const timeoutMs = typeof nodeConfig.timeoutMs === "number" ? nodeConfig.timeoutMs : undefined;
 
     const created = await adapter.createHttpApiTool({
