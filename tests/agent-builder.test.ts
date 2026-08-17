@@ -60,6 +60,16 @@ describe("multi API agent builder", () => {
     expect(next.workflow.nodes.find((node) => node.id === "action-1")?.config.bodyTemplate).toEqual({ email: "{{email}}" });
   });
 
+  it("clears an existing body template when settings explicitly send null", () => {
+    const previous = buildAgentConfig({ ...ids, version: 1, payload: AgentBuilderInputSchema.parse({ ...base, httpActions: [
+      { label: "Create lead", url: "https://api.example.com/leads", method: "POST", bodyTemplate: { email: "{{email}}" } },
+    ] }) });
+    const next = buildAgentConfig({ ...ids, version: 2, payload: AgentBuilderInputSchema.parse({ ...base, httpActions: [
+      { label: "Create lead", url: "https://api.example.com/leads", method: "POST", bodyTemplate: null },
+    ] }), previous });
+    expect(next.workflow.nodes.find((node) => node.id === "action-1")?.config).not.toHaveProperty("bodyTemplate");
+  });
+
   it("rejects unsafe or malformed tool argument names", () => {
     expect(() => AgentBuilderInputSchema.parse({ ...base, httpActions: [
       { label: "Bad action", url: "https://api.example.com", method: "POST", parameters: [
