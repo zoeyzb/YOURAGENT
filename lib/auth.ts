@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createNeonAuth } from "@neondatabase/auth/next/server";
 
-const DEFAULT_NEON_AUTH_BASE_URL = "https://ep-misty-credit-ayv01ntp.neonauth.c-5.us-east-2.aws.neon.tech/neondb/auth";
+const DEFAULT_NEON_AUTH_BASE_URL = "https://ep-bold-unit-av7unor0.neonauth.c-11.us-east-1.aws.neon.tech/neondb/auth";
 
 function resolveCookieSecret() {
   if (process.env.NEON_AUTH_COOKIE_SECRET) return process.env.NEON_AUTH_COOKIE_SECRET;
