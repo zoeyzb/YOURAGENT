@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type DograhState = {
   isInitialized?: boolean;
@@ -35,6 +36,7 @@ type TestSessionResponse = {
 };
 
 export function TestAgentButton({ agentId, disabled = false }: { agentId: string; disabled?: boolean }) {
+  const router = useRouter();
   const [status, setStatus] = useState<"idle" | "preparing" | "ready" | "connecting" | "connected" | "ending" | "error">("idle");
   const [error, setError] = useState("");
   const sessionId = useRef<string | null>(null);
@@ -68,7 +70,11 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
       const response = await fetch(`/api/agents/${agentId}/test-session?sessionId=${encodeURIComponent(id)}`, { method: "DELETE" });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error ?? "Could not clean up Dograh test preview");
-      if (body.warning) setError(`Test ended, but cleanup reported: ${body.warning}`);
+      if (body.warning) {
+        setError(`Test ended, but cleanup reported: ${body.warning}`);
+      } else if (body.callIngested) {
+        router.refresh();
+      }
     } finally {
       registeredRunId.current = null;
       cleaning.current = false;
