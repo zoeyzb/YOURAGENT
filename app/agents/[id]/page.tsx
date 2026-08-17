@@ -30,6 +30,11 @@ function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
+function managedActionNumber(node: WorkflowNodeView) {
+  const match = /^action-(\d+)$/.exec(node.id);
+  return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+}
+
 export default async function AgentPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!hasAuthConfiguration() || !hasDatabaseUrl()) {
@@ -89,8 +94,10 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const nodes = config.workflow?.nodes ?? [];
   const edges = config.workflow?.edges ?? [];
   const skills = config.skills ?? [];
-  const actionNode = nodes.find((node) => node.type === "tool") ?? null;
-  const transferNode = nodes.find((node) => node.type === "transfer") ?? null;
+  const actionNodes = nodes
+    .filter((node) => node.type === "tool" && /^action-\d+$/.test(node.id))
+    .sort((a, b) => managedActionNumber(a) - managedActionNumber(b));
+  const transferNode = nodes.find((node) => node.id === "transfer-1" && node.type === "transfer") ?? null;
   const encryptionReady = hasRuntimeSecretEncryptionKey();
   const devFallbackEnabled = process.env.ALLOW_GLOBAL_DOGRAH_FALLBACK === "true" && hasDograhEnv();
   const tenantRuntimeReady = Boolean(runtimeConnection) && encryptionReady;
@@ -114,7 +121,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       <section className="card builder-card"><span className="eyebrow">VOICE RUNTIME</span><h2>{runtimeLabel}</h2><TestAgentButton agentId={id} disabled={!runtimeConfigured}/>{!runtimeConfigured?<p style={{marginTop:12}}>{runtimeConnection && !encryptionReady ? "Runtime secret encryption must be restored before testing or deploying this tenant runtime." : "Connect this organization to Dograh before testing or deploying."}</p>:null}</section>
       <section className="card builder-card"><span className="eyebrow">DEPLOYMENT</span>{currentIsLive?<><h2>v{agent.current_version} is LIVE on {currentDeployment.provider}</h2><p>Runtime ID: <code>{currentDeployment.external_deployment_id}</code></p><RuntimeStatusButton agentId={id} action="pause"/></>:currentIsPaused?<><h2>v{agent.current_version} is PAUSED</h2><p>Runtime ID: <code>{currentDeployment.external_deployment_id}</code></p><RuntimeStatusButton agentId={id} action="resume"/></>:<><h2>v{agent.current_version} is not live yet.</h2>{olderVersionLive?<p>v{liveDeployment.agent_version} stays live until this version deploys successfully.</p>:<p>No older live deployment exists.</p>}{currentDeployment?.status==="failed"&&currentDeployment.last_error?<p style={{color:'#fca5a5'}}>Last deployment failed: {currentDeployment.last_error}</p>:null}<DeployButton agentId={id} disabled={!runtimeConfigured}/></>}<code className="hash">{version?.config_hash ?? "no version hash"}</code></section>
       <section className="card builder-card" style={{gridColumn:"1 / -1"}}><span className="eyebrow">FLOW BUILDER · SAVES A NEW IMMUTABLE VERSION</span><h2>Edit the conversation graph.</h2><p>Change conversation steps, prompts, routing, and conditional edges. Existing tool/transfer credentials remain attached to their action nodes.</p><WorkflowEditor agentId={id} initialNodes={nodes.map((node) => ({ ...node, config: node.config ?? {} }))} initialEdges={edges} /></section>
-      <section className="card builder-card" style={{gridColumn:"1 / -1"}}><span className="eyebrow">AGENT SETTINGS · CREATES A NEW IMMUTABLE VERSION</span><h2>Change the agent without rewriting history.</h2><EditAgentForm agentId={id} name={agent.name} industry={config.goal?.industry??"General"} objective={config.goal?.objective??"Help callers and complete the requested business task."} direction={config.goal?.direction??"inbound"} voiceProfile={config.voiceProfile??"warm-professional"} httpAction={actionNode?{label:actionNode.label,url:text(actionNode.config?.url),method:(["GET","POST","PUT","PATCH","DELETE"].includes(text(actionNode.config?.method))?text(actionNode.config?.method):"POST") as "GET"|"POST"|"PUT"|"PATCH"|"DELETE",credentialUuid:text(actionNode.config?.credentialUuid)||undefined}:null} transfer={transferNode?{label:transferNode.label,destination:text(transferNode.config?.destination),message:text(transferNode.config?.message)||undefined}:null}/></section>
+      <section className="card builder-card" style={{gridColumn:"1 / -1"}}><span className="eyebrow">AGENT SETTINGS · CREATES A NEW IMMUTABLE VERSION</span><h2>Change the agent without rewriting history.</h2><p>{actionNodes.length} managed API {actionNodes.length === 1 ? "action" : "actions"} on this version. Add or remove tools below, save a new version, test it, then deploy.</p><EditAgentForm agentId={id} name={agent.name} industry={config.goal?.industry??"General"} objective={config.goal?.objective??"Help callers and complete the requested business task."} direction={config.goal?.direction??"inbound"} voiceProfile={config.voiceProfile??"warm-professional"} httpActions={actionNodes.map((actionNode)=>({label:actionNode.label,url:text(actionNode.config?.url),method:(["GET","POST","PUT","PATCH","DELETE"].includes(text(actionNode.config?.method))?text(actionNode.config?.method):"POST") as "GET"|"POST"|"PUT"|"PATCH"|"DELETE",credentialUuid:text(actionNode.config?.credentialUuid)||undefined}))} transfer={transferNode?{label:transferNode.label,destination:text(transferNode.config?.destination),message:text(transferNode.config?.message)||undefined}:null}/></section>
       <section className="card builder-card" style={{gridColumn:"1 / -1"}}><span className="eyebrow">VERSION HISTORY</span><h2>{versions.length} recent versions</h2><p>Restoring an older version creates a new draft. The currently live workflow stays untouched until the restored draft passes testing and deploys through the safe cutover.</p>{versions.map((item)=><div className="agent-row" key={item.version}><div><strong>v{item.version} · {item.status.toUpperCase()}</strong><div style={{color:'#9ca3af',marginTop:4}}>{new Date(item.created_at).toLocaleString()}{item.restored_from_version ? ` · restored from v${item.restored_from_version}` : ""}</div></div><div style={{display:"flex",alignItems:"center",gap:12}}><code className="hash">{item.config_hash.slice(0,16)}…</code>{item.version < agent.current_version ? <RestoreVersionButton agentId={id} version={item.version} /> : null}</div></div>)}</section>
     </div>
   </div></main>;
