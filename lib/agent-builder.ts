@@ -91,7 +91,6 @@ function updatePreservedWorkflow(previous: AgentConfig, payload: AgentBuilderInp
     if (existing) {
       existing.label = action.label; existing.config = { ...existing.config, ...actionConfig(action) };
       if (!action.credentialUuid) delete existing.config.credentialUuid;
-      if (action.bodyTemplate === undefined) delete existing.config.bodyTemplate;
       continue;
     }
     const transfer = workflow.nodes.find((node) => node.id === "transfer-1"), end = workflow.nodes.find((node) => node.type === "end"), targetId = transfer?.id ?? end?.id;
