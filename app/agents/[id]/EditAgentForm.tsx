@@ -7,15 +7,26 @@ type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 type ParameterType = "string" | "number" | "boolean" | "object" | "array";
 type InitialParameter = { name: string; type: ParameterType; description: string; required: boolean };
 type ParameterDraft = InitialParameter & { id: string };
-type InitialAction = { label: string; url: string; method: HttpMethod; credentialUuid?: string; parameters?: InitialParameter[] };
-type ActionDraft = Omit<InitialAction, "parameters"> & { id: string; credentialUuid: string; parameters: ParameterDraft[] };
+type InitialAction = { label: string; url: string; method: HttpMethod; credentialUuid?: string; parameters?: InitialParameter[]; bodyTemplate?: unknown };
+type ActionDraft = Omit<InitialAction, "parameters" | "bodyTemplate"> & { id: string; credentialUuid: string; parameters: ParameterDraft[]; bodyTemplateText: string };
 type InitialTransfer = { label: string; destination: string; message?: string } | null;
 
 function makeParameter(parameter?: InitialParameter): ParameterDraft {
   return { id: crypto.randomUUID(), name: parameter?.name ?? "", type: parameter?.type ?? "string", description: parameter?.description ?? "", required: parameter?.required ?? true };
 }
 function makeAction(action?: InitialAction): ActionDraft {
-  return { id: crypto.randomUUID(), label: action?.label ?? "", url: action?.url ?? "", method: action?.method ?? "POST", credentialUuid: action?.credentialUuid ?? "", parameters: (action?.parameters ?? []).map(makeParameter) };
+  return {
+    id: crypto.randomUUID(),
+    label: action?.label ?? "",
+    url: action?.url ?? "",
+    method: action?.method ?? "POST",
+    credentialUuid: action?.credentialUuid ?? "",
+    parameters: (action?.parameters ?? []).map(makeParameter),
+    bodyTemplateText: action?.bodyTemplate === undefined ? "" : JSON.stringify(action.bodyTemplate, null, 2),
+  };
+}
+function usesJsonBody(method: HttpMethod) {
+  return method === "POST" || method === "PUT" || method === "PATCH";
 }
 
 export function EditAgentForm(props: {
@@ -43,15 +54,29 @@ export function EditAgentForm(props: {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError(""); setSaved("");
     const form = new FormData(event.currentTarget);
+
+    let normalizedActions: Array<Record<string, unknown>>;
+    try {
+      normalizedActions = httpActions.map(({ id: _id, credentialUuid, parameters, bodyTemplateText, ...action }) => {
+        const bodyTemplate = usesJsonBody(action.method) && bodyTemplateText.trim() ? JSON.parse(bodyTemplateText) : undefined;
+        return {
+          ...action,
+          parameters: parameters.map(({ id: _parameterId, ...parameter }) => parameter),
+          ...(credentialUuid.trim() ? { credentialUuid: credentialUuid.trim() } : {}),
+          ...(bodyTemplate !== undefined ? { bodyTemplate } : {}),
+        };
+      });
+    } catch {
+      setBusy(false);
+      setError("One API body template is not valid JSON. Fix it before saving this immutable version.");
+      return;
+    }
+
     const response = await fetch(`/api/agents/${props.agentId}`, {
       method: "PATCH", headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name: form.get("name"), industry: form.get("industry"), objective: form.get("objective"), direction: form.get("direction"), voiceProfile: form.get("voiceProfile"),
-        httpActions: httpActions.map(({ id: _id, credentialUuid, parameters, ...action }) => ({
-          ...action,
-          parameters: parameters.map(({ id: _parameterId, ...parameter }) => parameter),
-          ...(credentialUuid.trim() ? { credentialUuid: credentialUuid.trim() } : {}),
-        })),
+        httpActions: normalizedActions,
         transfer: addTransfer ? { label: form.get("transferLabel"), destination: form.get("transferDestination"), message: form.get("transferMessage") || undefined } : undefined,
       }),
     });
@@ -72,7 +97,7 @@ export function EditAgentForm(props: {
     <div className="card" style={{ padding: 16 }}>
       <span className="eyebrow">TOOLS & APIS</span>
       <h3 style={{ marginTop: 8 }}>{httpActions.length} API {httpActions.length === 1 ? "action" : "actions"} attached</h3>
-      <p style={{ color: "#9ca3af" }}>Each API is a separate tool with its own typed caller inputs. Saving creates a new immutable version; the live agent is unchanged until you test and deploy.</p>
+      <p style={{ color: "#9ca3af" }}>Each API is a separate Dograh HTTP tool. GET/DELETE inputs become query parameters; POST/PUT/PATCH inputs become JSON automatically unless you provide an exact body template.</p>
       {httpActions.map((action, index) => <div className="card" key={action.id} style={{ padding: 14, marginTop: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}><strong>API action {index + 1}</strong><button className="btn" type="button" onClick={() => setHttpActions((current) => current.filter((item) => item.id !== action.id))}>Remove API</button></div>
         <div className="form-grid" style={{ marginTop: 10 }}>
@@ -92,6 +117,16 @@ export function EditAgentForm(props: {
           </div>)}
           <button className="btn" type="button" style={{ marginTop: 10 }} onClick={() => patchAction(action.id, { parameters: [...action.parameters, makeParameter()] })}>+ Add input this API needs</button>
         </div>
+        {usesJsonBody(action.method) ? <label style={{ display: "grid", gap: 7, marginTop: 14 }}>
+          <span>Exact JSON body template <small style={{ color: "#9ca3af" }}>(optional)</small></span>
+          <textarea
+            rows={6}
+            value={action.bodyTemplateText}
+            onChange={(event) => patchAction(action.id, { bodyTemplateText: event.target.value })}
+            placeholder={'{"customer":{"email":"{{email}}"},"tags":["voice"]}'}
+          />
+          <small style={{ color: "#9ca3af" }}>Leave blank to send all collected inputs directly. Use Dograh placeholders such as {"{{email}}"}; nested objects and arrays are supported.</small>
+        </label> : <p style={{ color: "#9ca3af", marginTop: 12 }}>Dograh sends collected inputs for {action.method} as query parameters, so no request body is used.</p>}
       </div>)}
       <button className="btn" type="button" style={{ marginTop: 12 }} onClick={() => setHttpActions((current) => [...current, makeAction()])}>+ Add another API action</button>
     </div>
