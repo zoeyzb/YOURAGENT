@@ -115,6 +115,7 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
   }, []);
 
   async function startTest() {
+    if (cleaning.current) return;
     setStatus("preparing");
     setError("");
 
@@ -169,13 +170,16 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
             });
           });
           widget.onCallEnd(() => {
-            setStatus("idle");
+            setStatus("ending");
             void (async () => {
               try {
                 await registerRun();
                 await archivePreview();
               } catch (cause) {
                 setError(cause instanceof Error ? cause.message : "Could not finalize test run");
+              } finally {
+                removeWidgetArtifacts();
+                setStatus("idle");
               }
             })();
           });
@@ -198,6 +202,7 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
   }
 
   async function endTest() {
+    if (cleaning.current) return;
     setStatus("ending");
     setError("");
     try {
@@ -220,7 +225,7 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
     <div>
       {active ? (
         <button className="btn" onClick={endTest} disabled={status === "ending"}>
-          {status === "ending" ? "Ending test…" : status === "connected" ? "End test call" : `Stop test · ${status}`}
+          {status === "ending" ? "Finalizing test…" : status === "connected" ? "End test call" : `Stop test · ${status}`}
         </button>
       ) : (
         <button className="btn" onClick={startTest} disabled={disabled || status === "preparing"}>
@@ -228,6 +233,7 @@ export function TestAgentButton({ agentId, disabled = false }: { agentId: string
         </button>
       )}
       {status === "connected" ? <p style={{ color: "#bbf7d0", marginTop: 10 }}>Microphone connected to the isolated Dograh preview.</p> : null}
+      {status === "ending" ? <p style={{ color: "#fde68a", marginTop: 10 }}>Saving the canonical Dograh run and cleaning up the isolated preview…</p> : null}
       {error ? <p style={{ color: "#fca5a5", marginTop: 10 }}>{error}</p> : null}
     </div>
   );
