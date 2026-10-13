@@ -65,7 +65,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
     const status = message === "DATABASE_NOT_CONFIGURED" ? 503 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: status === 503 ? "BACKEND_NOT_CONFIGURED" : "AGENT_OPERATION_FAILED" }, { status });
   }
 }
 
