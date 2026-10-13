@@ -22,10 +22,10 @@ export default function Home() {
 
         <section className="hero" id="top">
           <div>
-            <span className="eyebrow">● Voice-agent control plane</span>
+            <span className="eyebrow">● Interactive voice-agent platform concept</span>
             <h1>Build the agent. Not the plumbing.</h1>
             <p className="lede">
-              Create tenant-isolated voice agents, test them in the browser, connect Twilio, route real phone numbers, place policy-gated outbound calls, and deploy immutable versions without silently breaking the live line.
+              Explore a voice-agent control plane with versioned configuration, browser testing, and policy-gated call workflows. Live telephony and agent deployment require a configured organization, database, and voice runtime.
             </p>
             <div className="hero-actions">
               <Link className="btn btn-primary" href="/dashboard">Create an agent</Link>
