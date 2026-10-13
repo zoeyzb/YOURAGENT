@@ -98,6 +98,6 @@ export async function PATCH(
     if (message === "VERSION_CONFLICT" || message === "AGENT_VERSION_NOT_FOUND") {
       return NextResponse.json({ error: message }, { status: 409 });
     }
-    return NextResponse.json({ error: message }, { status: message === "DATABASE_NOT_CONFIGURED" ? 503 : 500 });
+    return NextResponse.json({ error: message === "DATABASE_NOT_CONFIGURED" ? "BACKEND_NOT_CONFIGURED" : "AGENT_UPDATE_FAILED" }, { status: message === "DATABASE_NOT_CONFIGURED" ? 503 : 500 });
   }
 }
