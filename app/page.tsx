@@ -22,7 +22,7 @@ export default function Home() {
 
         <section className="hero" id="top">
           <div>
-            <span className="eyebrow">● Interactive voice-agent platform concept</span>
+            <span className="eyebrow">● Interactive voice-agent platform concept · integrations require setup</span>
             <h1>Build the agent. Not the plumbing.</h1>
             <p className="lede">
               Explore a voice-agent control plane with versioned configuration, browser testing, and policy-gated call workflows. Live telephony and agent deployment require a configured organization, database, and voice runtime.
