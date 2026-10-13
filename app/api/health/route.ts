@@ -55,9 +55,19 @@ export async function GET() {
   const authState: ServiceState = hasAuthConfiguration() ? "configured" : "missing_configuration";
   const runtimeSecretsState: ServiceState = hasRuntimeSecretEncryptionKey() ? "ready" : "missing_configuration";
   const ready = database.state === "ready" && authState === "configured";
+  const voiceConfigurationReady = ready && runtimeSecretsState === "ready";
+  const blockers = [
+    ...(database.state === "ready" ? [] : ["DATABASE_UNAVAILABLE"]),
+    ...(authState === "configured" ? [] : ["AUTH_NOT_CONFIGURED"]),
+    ...(runtimeSecretsState === "ready" ? [] : ["RUNTIME_SECRET_ENCRYPTION_KEY_MISSING"]),
+  ];
 
   return NextResponse.json({
     ok: ready,
+    capabilities: {
+      dashboard: { ready, blockers: blockers.filter((b) => b !== "RUNTIME_SECRET_ENCRYPTION_KEY_MISSING") },
+      tenantVoiceConfiguration: { ready: voiceConfigurationReady, blockers, note: "Actual calling also requires valid organization-scoped runtime credentials and an operational voice provider." },
+    },
     services: {
       web: { state: "ready" as ServiceState },
       database,
