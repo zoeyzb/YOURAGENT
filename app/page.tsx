@@ -28,7 +28,7 @@ export default function Home() {
               Explore a voice-agent control plane with versioned configuration, browser testing, and policy-gated call workflows. Live telephony and agent deployment require a configured organization, database, and voice runtime.
             </p>
             <div className="hero-actions">
-              <Link className="btn btn-primary" href="/dashboard">Create an agent</Link>
+              <Link className="btn btn-primary" href="/demo">Explore interactive demo</Link><Link className="btn" href="/dashboard">Real dashboard</Link>
               <a className="btn" href="#platform">See how it works</a>
             </div>
           </div>
