@@ -16,7 +16,7 @@ async function probeDatabase() {
   } catch (error) {
     return {
       state: "unreachable" as ServiceState,
-      error: error instanceof Error ? error.message : "DATABASE_HEALTH_ERROR",
+      error: "DATABASE_HEALTH_ERROR",
     };
   }
 }
