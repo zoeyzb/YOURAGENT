@@ -9,6 +9,7 @@ export default function DemoAgentStudio(){
  const [selected,setSelected]=useState<number>(1);const [caller,setCaller]=useState("I want to book an appointment.");
  const [scenario,setScenario]=useState("Appointment booking");
  const [history,setHistory]=useState<{agent:string;caller:string;reply:string;scenario:string}[]>([]);
+ const [demoStatus,setDemoStatus]=useState("All example conversations are simulated, not calls.");
  const [notice,setNotice]=useState("");
  function exportDemo(){
   const url=URL.createObjectURL(new Blob([JSON.stringify({sampleOnly:true,agents,history},null,2)],{type:"application/json"}));
